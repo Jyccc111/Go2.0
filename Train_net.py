@@ -107,6 +107,11 @@ class Policy_network(nn.Module):
                 363
             )
         )
+        self.optimizer = torch.optim.AdamW(
+            self.network.parameters(),
+            lr=1e-3,
+            weight_decay=1e-4
+        )
     def forward(self, x):
         return self.network(x)
 
