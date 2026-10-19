@@ -7,6 +7,9 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import random
 import torch.nn.functional as F
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 class GoDataset(Dataset):
 
     def __init__(self, states, actions):
