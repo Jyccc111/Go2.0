@@ -6,6 +6,7 @@ from torch import nn
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import random
+import torch.nn.functional as F
 class GoDataset(Dataset):
 
     def __init__(self, states, actions):
@@ -137,7 +138,7 @@ class Policy_network(nn.Module):
             data_repo_id,
             model_repo_id,
             val_ratio=0.2,
-            batch_size=4096
+            batch_size=512
         ):
 
         api = HfApi()
@@ -468,7 +469,7 @@ class Policy_network(nn.Module):
             # ======================================
 
             if is_best:
-                filename_best = "last_policy_network.pth"
+                filename_best = "best_policy_network.pth"
 
                 torch.save(
                     checkpoint,
