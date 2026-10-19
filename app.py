@@ -2,7 +2,7 @@ from flask import Flask, jsonify, render_template, request
 from Game import Game, Player
 from sgfmill import sgf, sgf_properties
 import numpy as np
-
+from AI import AI
 app = Flask(__name__)
 game = Game()
 sgf_replay = None
