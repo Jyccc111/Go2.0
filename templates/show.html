@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Go 棋谱合法性调试</title>
+        <link rel="stylesheet"
+            href="{{ url_for('static', filename='styles.css') }}">
+    </head>
+    <body>
+        <h1>围棋棋谱调试</h1>
+        <p id="color">当前棋手：</p>
+        <section id="sgf-tools">
+            <label for="sgf-file">选择 SGF 棋谱</label>
+            <input id="sgf-file" type="file" accept=".sgf">
+            <button id="load-sgf" type="button">载入棋谱</button>
+            <button id="step-sgf" type="button" disabled>下一手</button>
+            <label><input id="show-legal" type="checkbox">显示 Game 标记的合法点</label>
+            <label><input id="show-num-eat" type="checkbox">显示 num_eat（黑/白）</label>
+            <small>黑色数字 = num_eat[0]；红色数字 = num_eat[1]。</small>
+            <span id="sgf-progress">尚未载入棋谱</span>
+            <pre id="sgf-diagnostic" aria-live="polite"></pre>
+        </section>
+        <div id="game-container">
+        <canvas id="go-board" width="600" height="600"></canvas>
+
+        <div id="controls">
+            <button type="button">Pass</button>
+            <button type="button">Reset</button>
+            <button id="toggle-air">显示气数</button>
+        </div>
+        
+        <script src="{{ url_for('static', filename='script.js') }}"></script>
+    </body>
+</html>
+

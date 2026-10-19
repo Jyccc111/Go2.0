@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+
+# Environment variables and secrets
+.env
+.env.*
+
+# Model checkpoints
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Generated datasets
+data/
+datasets/

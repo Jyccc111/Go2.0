@@ -1,0 +1,109 @@
+body {
+    background-color: #f5f1e8;
+    font-family: Arial, sans-serif;
+    text-align: center;
+}
+
+h1 {
+    color: #333333;
+    font-size: 32px;
+}
+
+#game-status {
+    font-size: 18px;
+    color: #555555;
+}
+
+
+button {
+    padding: 10px 24px;
+    margin: 5px;
+
+    font-size: 16px;
+    font-family: Arial, sans-serif;
+
+    color: #ffffff;
+    background-color: #5c4630;
+
+    border: none;
+    border-radius: 6px;
+
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+button:hover {
+    background-color: #806344;
+}
+
+body {
+    background-color: lightblue;
+}
+
+#game-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 15px;
+}
+
+#controls {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+}
+
+#go-board {
+    width: 600px;
+    height: 600px;
+
+    background: linear-gradient(
+        135deg,
+        #e9c783,
+        #d9ad62,
+        #e8c47d
+    );
+
+    border: 2px solid #6b4423;
+    border-radius: 2px;
+}
+
+#sgf-tools {
+    width: min(900px, 94vw);
+    margin: 14px auto;
+    padding: 14px;
+    background: #fffdf8;
+    border: 1px solid #d8c8aa;
+    border-radius: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+}
+
+#sgf-tools input[type="file"] {
+    max-width: 260px;
+}
+
+#sgf-tools label {
+    color: #333;
+}
+
+#sgf-progress {
+    font-weight: 600;
+    color: #463522;
+}
+
+#sgf-diagnostic {
+    flex-basis: 100%;
+    max-height: 220px;
+    overflow: auto;
+    margin: 4px 0 0;
+    padding: 10px;
+    text-align: left;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: #f3efe6;
+    border-radius: 5px;
+}
