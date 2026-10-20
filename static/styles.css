@@ -107,3 +107,30 @@ body {
     background: #f3efe6;
     border-radius: 5px;
 }
+
+
+#session-tools {
+    width: min(900px, 94vw);
+    margin: 14px auto;
+    padding: 14px;
+    background: #fffdf8;
+    border: 1px solid #d8c8aa;
+    border-radius: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+}
+
+#session-tools select,
+#session-tools input {
+    padding: 8px;
+    border: 1px solid #b8a789;
+    border-radius: 5px;
+    font-size: 16px;
+}
+
+#session-tools label {
+    color: #333;
+}

@@ -157,9 +157,13 @@ class Game:
             for j in range(19):
                 if self.board.get(i,j) == 0:
                     self.islegal[i, j] = 1
-                if not self.is_self_eaten( i, j, -self.current_player.value):
+                # Check suicide legality from the current player's perspective.
+                # Passing the opponent color falsely treats friendly neighbors
+                # as opposing stones and marks many valid points illegal.
+                if not self.is_self_eaten(i, j, self.current_player.value):
                     self.islegal[i, j] = 0
-                if self.num_eat[anti_layer,i,j] > 0:
+                # num_eat[layer] stores capture moves available to this player.
+                if self.num_eat[layer, i, j] > 0:
                     self.islegal[i, j] = 1
                 if self.lasteated[i, j] == 1:
                     self.islegal[i, j] = 0

@@ -149,11 +149,16 @@ class sgf_loader():
 
                 continue
             stone = 1 if color == "b" else -1
+            # Encode the position before the move, for the player about to move.
+            # Game.play() updates legality for its current_player, so switch it
+            # here as well when the SGF color differs from the previous move.
+            self.game.current_player = Player.BLACK if stone == 1 else Player.WHITE
+            self.game.update_legal_position()
             # pass
             if raw == b"":
                 state = self.encode_board(stone)
                 self.states.append(state)
-                self.actions.append(self.size*self.size
+                self.actions.append(self.size * self.size)  # 361: pass
                 self.results.append(result)
                 self.game.is_pass()
                 continue
@@ -173,6 +178,10 @@ class sgf_loader():
             if move is None:
                 continue
             row, col = move
+
+            # Save the pre-move position. Encoding after play() leaks the
+            # answer into the input because the target point is already occupied.
+            state = self.encode_board(stone)
 
             # 只尝试落子一次
             success = self.game.play(row, col, stone)
@@ -198,7 +207,6 @@ class sgf_loader():
                 print("=" * 70)
 
                 raise RuntimeError("遇到非法棋步，已停止读取棋谱")
-            state = self.encode_board(stone)
             self.states.append(state)
             action = row * self.size + col
             self.actions.append(action)

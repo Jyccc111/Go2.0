@@ -10,6 +10,22 @@
     <body>
         <h1>围棋棋谱调试</h1>
         <p id="color">当前棋手：</p>
+        <section id="session-tools" aria-label="对局设置">
+            <label for="player-black">黑棋</label>
+            <select id="player-black">
+                <option value="1" selected>人类</option>
+                <option value="0">AI</option>
+            </select>
+            <label for="player-white">白棋</label>
+            <select id="player-white">
+                <option value="1" selected>人类</option>
+                <option value="0">AI</option>
+            </select>
+            <label for="komi">贴目</label>
+            <input id="komi" type="number" value="6.5" step="0.5">
+            <button id="start-game" type="button">开始新对局</button>
+            <span id="game-status" aria-live="polite">默认人类对弈；选择执棋方后可开始新对局。</span>
+        </section>
         <section id="sgf-tools">
             <label for="sgf-file">选择 SGF 棋谱</label>
             <input id="sgf-file" type="file" accept=".sgf">
@@ -25,7 +41,7 @@
         <canvas id="go-board" width="600" height="600"></canvas>
 
         <div id="controls">
-            <button type="button">Pass</button>
+            <button id="pass-move" type="button">Pass</button>
             <button type="button">Reset</button>
             <button id="toggle-air">显示气数</button>
         </div>

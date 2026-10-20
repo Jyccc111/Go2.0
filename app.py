@@ -1,10 +1,10 @@
 from flask import Flask, jsonify, render_template, request
 from Game import Game, Player
 from sgfmill import sgf, sgf_properties
-import numpy as np
-from AI import AI
+from GameSession import GameSession, Type_player
 app = Flask(__name__)
-game = Game()
+game_session = GameSession()
+game = game_session.game
 sgf_replay = None
 
 
@@ -33,31 +33,86 @@ def index():
 
 @app.route("/state", methods=["GET"])
 def get_state():
-    return jsonify({
-        "board": game.board.board.tolist(),
-        "cluster_air": game.cluster_air.tolist(),
-        "islegal": game.islegal.tolist(),
-        "num_eat": game.num_eat.tolist(),
-        "current_player": int(game.current_player.value),
-    })
+    return jsonify(game_session.get_state())
+
+
+@app.route("/session/init", methods=["POST"])
+def initialize_session():
+    global game
+    data = request.get_json(silent=True) or {}
+    try:
+        state = game_session.initialize(
+            data.get("player_black", Type_player.HUMAN),
+            data.get("player_white", Type_player.HUMAN),
+            data.get("komi", 0),
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Could not initialize players: {exc}"}), 503
+    game = game_session.game
+    response = {"success": True, **state}
+    if game_session.player_type(game_session.next_player) == Type_player.AI:
+        ai_outcome = game_session.play_ai()
+        response.update(game_session.get_state())
+        response["ai_move"] = ai_outcome.get("move")
+        if not ai_outcome.get("success"):
+            response["ai_error"] = ai_outcome.get("error")
+    return jsonify(response)
 @app.route("/play", methods=["POST"])
 def play():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
+    try:
+        outcome = game_session.play_human(
+            data.get("row"), data.get("col"),
+            data.get("color", game_session.next_player.value),
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
 
-    row = data["row"]
-    col = data["col"]
-    color = data["color"]
+    if not outcome["success"]:
+        return jsonify({**outcome, **game_session.get_state()}), 400
 
-    success = game.play(row, col, color)
+    ai_outcome = None
+    if not game_session.game_over and game_session.player_type(game_session.next_player) == Type_player.AI:
+        ai_outcome = game_session.play_ai()
+    response = {
+        "success": True,
+        **game_session.get_state(),
+        "human_move": outcome.get("move"),
+    }
+    if ai_outcome is not None:
+        response["ai_move"] = ai_outcome.get("move")
+        if not ai_outcome.get("success"):
+            response["ai_error"] = ai_outcome.get("error")
+    return jsonify(response)
 
-    return jsonify({
-        "success": success,
-        "board": game.board.board.tolist(),
-        "air": game.air.board.tolist(),
-        "cluster_air": game.cluster_air.tolist(),
-        "num_eat": game.num_eat.tolist(),
-        "current_player": int(game.current_player.value)
-    })
+
+@app.route("/pass", methods=["POST"])
+def pass_turn():
+    data = request.get_json(silent=True) or {}
+    try:
+        outcome = game_session.pass_human(
+            data.get("color", game_session.next_player.value)
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    if not outcome["success"]:
+        return jsonify({**outcome, **game_session.get_state()}), 400
+    if (outcome["success"] and not game_session.game_over
+            and game_session.player_type(game_session.next_player) == Type_player.AI):
+        ai_outcome = game_session.play_ai()
+        outcome["ai_move"] = ai_outcome.get("move")
+        if not ai_outcome.get("success"):
+            outcome["ai_error"] = ai_outcome.get("error")
+    return jsonify({**outcome, **game_session.get_state()})
+
+
+@app.route("/ai_move", methods=["POST"])
+def ai_move():
+    outcome = game_session.play_ai()
+    status = 200 if outcome.get("success") else 400
+    return jsonify({**outcome, **game_session.get_state()}), status
 
 
 @app.route("/sgf/load", methods=["POST"])

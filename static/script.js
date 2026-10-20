@@ -2,6 +2,9 @@ const canvas = document.getElementById("go-board");
 const ctx = canvas.getContext("2d");
 const gridWidth = canvas.width/20;
 const toggleAirButton = document.getElementById("toggle-air");
+const passMoveButton = document.getElementById("pass-move");
+const startGameButton = document.getElementById("start-game");
+const gameStatus = document.getElementById("game-status");
 
 let showAir = false;
 
@@ -58,6 +61,8 @@ showNumEatCheckbox.addEventListener("change", function() {
 });
 
 loadSgfButton.addEventListener("click", loadSgf);
+startGameButton.addEventListener("click", startGame);
+passMoveButton.addEventListener("click", passMove);
 stepSgfButton.addEventListener("click", stepSgf);
 
 const rect = canvas.getBoundingClientRect();
@@ -99,6 +104,83 @@ function drawStone(x, y, color) {
     ctx.fill();
 }
 
+function showSessionState(data) {
+    if (data.game_over) {
+        gameStatus.textContent = data.result === "two_passes"
+            ? "双方连续 Pass，对局结束。"
+            : "对局结束：" + (data.result || "完成");
+        return;
+    }
+    const colorName = data.next_player === 1 ? "黑棋" : "白棋";
+    const playerType = data.next_player === 1 ? data.player_black : data.player_white;
+    const controller = playerType === 0 ? "AI" : "人类";
+    gameStatus.textContent = "轮到" + colorName + "（" + controller + "）";
+    if (data.ai_error) gameStatus.textContent += "；AI 出错：" + data.ai_error;
+}
+
+async function startGame() {
+    startGameButton.disabled = true;
+    gameStatus.textContent = "正在开始对局…";
+    try {
+        const response = await fetch("/session/init", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                player_black: Number(document.getElementById("player-black").value),
+                player_white: Number(document.getElementById("player-white").value),
+                komi: Number(document.getElementById("komi").value)
+            })
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+            gameStatus.textContent = data.error || "无法开始对局。";
+            return;
+        }
+        currentColor = data.next_player;
+        drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
+        showSessionState(data);
+        const bothAi =
+            Number(document.getElementById("player-black").value) === 0 &&
+            Number(document.getElementById("player-white").value) === 0;
+        if (bothAi && !data.ai_error) await runSelfPlay(data);
+    } catch (error) {
+        gameStatus.textContent = "无法开始对局：" + error.message;
+    } finally {
+        startGameButton.disabled = false;
+    }
+}
+
+async function runSelfPlay(initialState) {
+    let state = initialState;
+    let moves = 0;
+    const moveLimit = 1000;
+
+    while (!state.game_over && moves < moveLimit) {
+        gameStatus.textContent = "AI 对局进行中…";
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        try {
+            const response = await fetch("/ai_move", { method: "POST" });
+            state = await response.json();
+            if (!response.ok || !state.success) {
+                gameStatus.textContent = state.error || "AI 落子失败。";
+                return;
+            }
+        } catch (error) {
+            gameStatus.textContent = "AI 对局中断：" + error.message;
+            return;
+        }
+
+        currentColor = state.next_player;
+        drawBoardState(state.board, state.cluster_air, state.islegal, [], state.num_eat);
+        showSessionState(state);
+        moves += 1;
+    }
+
+    if (!state.game_over && moves >= moveLimit) {
+        gameStatus.textContent = "已达到自我对局步数上限。";
+    }
+}
+
 async function playMove(row, col) {
     const response = await fetch("/play", {
         method: "POST",
@@ -115,13 +197,30 @@ async function playMove(row, col) {
     const data = await response.json();
 
      if (!data.success) {
-        console.log("Illegal move!");
+        gameStatus.textContent = data.error || "非法落子。";
         return;
      }
-    currentColor = -currentColor;
+    currentColor = Number.isInteger(data.next_player) ? data.next_player : -currentColor;
     drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
+    showSessionState(data);
 
 
+}
+
+async function passMove() {
+    const response = await fetch("/pass", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ color: currentColor })
+    });
+    const data = await response.json();
+    if (!data.success) {
+        gameStatus.textContent = data.error || "Pass 失败。";
+        return;
+    }
+    if (Number.isInteger(data.next_player)) currentColor = data.next_player;
+    drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
+    showSessionState(data);
 }
 
 function drawBoardState(board, clusterAir, legal = null, captures = [], numEat = null) {
@@ -326,8 +425,10 @@ function drawAir(board, clusterAir) {
 async function loadBoard() {
     const response = await fetch("/state");
     const data = await response.json();
+    if (Number.isInteger(data.next_player)) currentColor = data.next_player;
 
     drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
+    if (gameStatus) showSessionState(data);
 }
 
 loadBoard();
