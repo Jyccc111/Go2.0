@@ -49,8 +49,16 @@ body {
 
 #controls {
     display: flex;
+    flex-wrap: wrap;
     justify-content: center;
     gap: 10px;
+}
+
+#ai-recommendations {
+    max-width: min(900px, 94vw);
+    margin: 0 auto 14px;
+    color: #463522;
+    line-height: 1.7;
 }
 
 #go-board {

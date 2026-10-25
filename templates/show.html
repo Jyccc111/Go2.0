@@ -44,7 +44,9 @@
             <button id="pass-move" type="button">Pass</button>
             <button type="button">Reset</button>
             <button id="toggle-air">显示气数</button>
+            <button id="show-ai-recommendations" type="button">查看 AI 推荐的 5 个位置</button>
         </div>
+        <div id="ai-recommendations" aria-live="polite"></div>
         
         <script src="{{ url_for('static', filename='script.js') }}"></script>
     </body>

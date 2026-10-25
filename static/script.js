@@ -4,6 +4,8 @@ const gridWidth = canvas.width/20;
 const toggleAirButton = document.getElementById("toggle-air");
 const passMoveButton = document.getElementById("pass-move");
 const startGameButton = document.getElementById("start-game");
+const showRecommendationsButton = document.getElementById("show-ai-recommendations");
+const recommendationsText = document.getElementById("ai-recommendations");
 const gameStatus = document.getElementById("game-status");
 
 let showAir = false;
@@ -13,6 +15,7 @@ let currentClusterAir = null;
 let currentLegal = null;
 let currentCaptures = [];
 let currentNumEat = null;
+let currentRecommendations = [];
 let currentColor = 1;
 let sgfLoaded = false;
 let sgfStopped = false;
@@ -63,6 +66,7 @@ showNumEatCheckbox.addEventListener("change", function() {
 loadSgfButton.addEventListener("click", loadSgf);
 startGameButton.addEventListener("click", startGame);
 passMoveButton.addEventListener("click", passMove);
+showRecommendationsButton.addEventListener("click", showAiRecommendations);
 stepSgfButton.addEventListener("click", stepSgf);
 
 const rect = canvas.getBoundingClientRect();
@@ -120,6 +124,7 @@ function showSessionState(data) {
 
 async function startGame() {
     startGameButton.disabled = true;
+    clearAiRecommendations();
     gameStatus.textContent = "正在开始对局…";
     try {
         const response = await fetch("/session/init", {
@@ -170,6 +175,7 @@ async function runSelfPlay(initialState) {
             return;
         }
 
+        clearAiRecommendations();
         currentColor = state.next_player;
         drawBoardState(state.board, state.cluster_air, state.islegal, [], state.num_eat);
         showSessionState(state);
@@ -200,6 +206,7 @@ async function playMove(row, col) {
         gameStatus.textContent = data.error || "非法落子。";
         return;
      }
+    clearAiRecommendations();
     currentColor = Number.isInteger(data.next_player) ? data.next_player : -currentColor;
     drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
     showSessionState(data);
@@ -218,9 +225,50 @@ async function passMove() {
         gameStatus.textContent = data.error || "Pass 失败。";
         return;
     }
+    clearAiRecommendations();
     if (Number.isInteger(data.next_player)) currentColor = data.next_player;
     drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
     showSessionState(data);
+}
+
+function clearAiRecommendations() {
+    currentRecommendations = [];
+    recommendationsText.textContent = "";
+}
+
+function goPointName(row, col) {
+    const columns = "ABCDEFGHJKLMNOPQRST";
+    return `${columns[col]}${19 - row}（行 ${row}，列 ${col}）`;
+}
+
+async function showAiRecommendations() {
+    showRecommendationsButton.disabled = true;
+    recommendationsText.textContent = "正在计算 AI 推荐位置…";
+    try {
+        const response = await fetch("/ai/recommendations");
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || "无法获取 AI 推荐。");
+        }
+        currentRecommendations = data.recommendations || [];
+        drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
+        if (currentRecommendations.length === 0) {
+            recommendationsText.textContent = "当前没有可推荐的合法落点。";
+        } else {
+            const side = data.color === 1 ? "黑棋" : "白棋";
+            recommendationsText.textContent = `${side} AI 推荐：` + currentRecommendations
+                .map((point, index) => `${index + 1}. ${goPointName(point.row, point.col)}（分数 ${point.score.toFixed(3)}）`)
+                .join("；");
+        }
+    } catch (error) {
+        currentRecommendations = [];
+        recommendationsText.textContent = error.message;
+        if (currentBoard !== null) {
+            drawBoardState(currentBoard, currentClusterAir, currentLegal, currentCaptures, currentNumEat);
+        }
+    } finally {
+        showRecommendationsButton.disabled = false;
+    }
 }
 
 function drawBoardState(board, clusterAir, legal = null, captures = [], numEat = null) {
@@ -253,10 +301,31 @@ function drawBoardState(board, clusterAir, legal = null, captures = [], numEat =
         }
     }
 
+    drawRecommendationMarkers();
+
     drawCaptureHighlights(captures);
     if (showNumEatCheckbox.checked && numEat !== null) {
         drawNumEat(numEat);
     }
+}
+
+function drawRecommendationMarkers() {
+    currentRecommendations.forEach((point, index) => {
+        const x = 30 + point.col * gridWidth;
+        const y = 30 + point.row * gridWidth;
+        ctx.beginPath();
+        ctx.arc(x, y, 10, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
+        ctx.fill();
+        ctx.strokeStyle = "#b33a20";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = "#8d2415";
+        ctx.font = "bold 12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(index + 1), x, y);
+    });
 }
 
 function drawNumEat(numEat) {
@@ -313,6 +382,7 @@ function drawLegalPoints(legal) {
 }
 
 function showSgfState(data) {
+    clearAiRecommendations();
     const captures = data.move?.captured || [];
     drawBoardState(data.board, data.cluster_air, data.islegal, captures, data.num_eat);
     sgfProgress.textContent = data.message || `已处理 ${data.index}/${data.total} 手`;

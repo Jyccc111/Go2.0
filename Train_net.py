@@ -8,7 +8,16 @@ import numpy as np
 import random
 import torch.nn.functional as F
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def get_device():
+    """Prefer CUDA, then Apple MPS, and fall back to CPU."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+device = get_device()
 
 class GoDataset(Dataset):
 
@@ -75,29 +84,33 @@ class ResBlock(nn.Module):
         return x
 class Policy_network(nn.Module):
 
-    def __init__(self):
+    def __init__(self, size=64, num_blocks=4):
 
         super().__init__()
+
+        if size <= 0:
+            raise ValueError("size must be a positive integer")
+        if num_blocks < 0:
+            raise ValueError("num_blocks must be a non-negative integer")
+        self.size = int(size)
+        self.num_blocks = int(num_blocks)
 
         self.network = nn.Sequential(
 
             nn.Conv2d(
                 in_channels=8,
-                out_channels=64,
+                out_channels=size,
                 kernel_size=3,
                 padding=1
             ),
 
-            nn.BatchNorm2d(64),
+            nn.BatchNorm2d(size),
             nn.ReLU(),
 
             # ResNet
-            ResBlock(64),
-            ResBlock(64),
-            ResBlock(64),
-            ResBlock(64),
+            *[ResBlock(size) for _ in range(self.num_blocks)],
             nn.Conv2d(
-                64,
+                size,
                 2,
                 kernel_size=1
             ),
@@ -125,14 +138,15 @@ class Policy_network(nn.Module):
         map_location=device
         )
 
-        self.network.load_state_dict(
-            checkpoint["model_state_dict"]
-        )
+        state_dict = checkpoint.get("model_state_dict", checkpoint)
+        if state_dict and next(iter(state_dict)).startswith("network."):
+            state_dict = {key.removeprefix("network."): value for key, value in state_dict.items()}
+        self.network.load_state_dict(state_dict)
 
-        self.optimizer.load_state_dict(
-                checkpoint["optimizer_state_dict"]
-        )
-        return checkpoint["epoch"]
+        optimizer_state = checkpoint.get("optimizer_state_dict")
+        if optimizer_state is not None:
+            self.optimizer.load_state_dict(optimizer_state)
+        return checkpoint.get("epoch", 0)
 
     def fit(
             self,
@@ -145,6 +159,7 @@ class Policy_network(nn.Module):
         ):
 
         api = HfApi()
+        self.to(device)
 
         criterion = nn.CrossEntropyLoss()
 
@@ -242,6 +257,9 @@ class Policy_network(nn.Module):
                 # Training
                 # -------------------------------
 
+                chunk_loss = 0.0
+                chunk_samples = 0
+
                 for states_batch, actions_batch in loader:
                     states_batch = states_batch.to(device)
                     actions_batch = actions_batch.to(device)
@@ -267,9 +285,12 @@ class Policy_network(nn.Module):
                     )
 
                     train_samples += batch_size_actual
+                    chunk_loss += loss.item() * batch_size_actual
+                    chunk_samples += batch_size_actual
 
                 print(
-                    f"Chunk loss: {loss.item():.4f}"
+                    f"Chunk average loss: {chunk_loss / chunk_samples:.4f}"
+                    if chunk_samples else "Chunk average loss: n/a (empty chunk)"
                 )
 
                 # -------------------------------
@@ -422,6 +443,8 @@ class Policy_network(nn.Module):
             # ======================================
 
             checkpoint = {
+                "size": self.size,
+                "num_blocks": self.num_blocks,
 
                 "epoch": epoch + 1,
 
@@ -449,7 +472,7 @@ class Policy_network(nn.Module):
             # 每个 Epoch 都保存
             # ======================================
 
-            filename_last = "last_policy_network.pth"
+            filename_last = "last_policy_network_128.pth"
 
             torch.save(
                 checkpoint,
@@ -472,7 +495,7 @@ class Policy_network(nn.Module):
             # ======================================
 
             if is_best:
-                filename_best = "best_policy_network.pth"
+                filename_best = "best_policy_network_128.pth"
 
                 torch.save(
                     checkpoint,

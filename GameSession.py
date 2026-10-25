@@ -120,6 +120,11 @@ class GameSession:
         self.history.append(move)
         self.next_player = Player(-color.value)
         self.pass_count = 0
+        # Game.play() leaves current_player set to the player who just moved
+        # and computes islegal for that color. The next AI must receive a
+        # legality map for the opponent whose turn it is now.
+        self.game.current_player = self.next_player
+        self.game.update_legal_position()
         return {"success": True, "move": move}
 
     def pass_human(self, color):
@@ -135,11 +140,9 @@ class GameSession:
         if color != self.next_player:
             return {"success": False, "error": f"It is {self._color_name(self.next_player)}'s turn."}
 
-        # current_player records the last actor; Game recomputes legality for
-        # the opponent, matching the existing SGF replay semantics.
+        # GameSession keeps current_player aligned with the side to move.
         self.game.current_player = color
-        self.game.lasteated.fill(0)
-        self.game.update_legal_position()
+        self.game.is_pass()
         move = {"color": color.value, "row": None, "col": None, "pass": True}
         self.history.append(move)
         self.next_player = Player(-color.value)

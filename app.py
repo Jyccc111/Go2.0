@@ -6,6 +6,25 @@ app = Flask(__name__)
 game_session = GameSession()
 game = game_session.game
 sgf_replay = None
+recommendation_ai = None
+
+
+def get_recommendation_ai(color):
+    """Reuse a session AI or lazily load one for human-vs-human games."""
+    global recommendation_ai
+    session_ai = (
+        game_session.AI_black if color == Player.BLACK
+        else game_session.AI_white
+    )
+    if session_ai is not None:
+        return session_ai
+    other_ai = game_session.AI_white if color == Player.BLACK else game_session.AI_black
+    if other_ai is not None:
+        return other_ai
+    if recommendation_ai is None:
+        from AI import AI
+        recommendation_ai = AI()
+    return recommendation_ai
 
 
 def replay_payload(message=None):
@@ -113,6 +132,24 @@ def ai_move():
     outcome = game_session.play_ai()
     status = 200 if outcome.get("success") else 400
     return jsonify({**outcome, **game_session.get_state()}), status
+
+
+@app.route("/ai/recommendations", methods=["GET"])
+def ai_recommendations():
+    if game_session.game_over:
+        return jsonify({"success": False, "error": "对局已结束，无法生成推荐。"}), 400
+    color = game_session.next_player
+    try:
+        ai = get_recommendation_ai(color)
+        recommendations = ai.recommend_moves(game_session.game, color.value, top_k=5)
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"生成 AI 推荐失败：{exc}"}), 503
+    return jsonify({
+        "success": True,
+        "color": color.value,
+        "recommendations": recommendations,
+        **game_session.get_state(),
+    })
 
 
 @app.route("/sgf/load", methods=["POST"])
