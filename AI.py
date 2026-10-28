@@ -46,7 +46,7 @@ class AI():
 
         model_path = hf_hub_download(
             repo_id="Jycccc111/Go-Policy",
-            filename="best_policy_network.pth"
+            filename="best_policy_network_128.pth"
         )
 
         checkpoint = torch.load(
