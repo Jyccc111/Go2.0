@@ -6,7 +6,21 @@ const passMoveButton = document.getElementById("pass-move");
 const startGameButton = document.getElementById("start-game");
 const showRecommendationsButton = document.getElementById("show-ai-recommendations");
 const recommendationsText = document.getElementById("ai-recommendations");
+const predictGameResultButton = document.getElementById("predict-game-result");
+const valuePredictionText = document.getElementById("value-prediction");
 const gameStatus = document.getElementById("game-status");
+const sessionDialog = document.getElementById("session-dialog");
+const sgfDialog = document.getElementById("sgf-dialog");
+document.getElementById("open-session-dialog").addEventListener("click", () => sessionDialog.showModal());
+document.getElementById("open-sgf-dialog").addEventListener("click", () => sgfDialog.showModal());
+document.querySelectorAll("[data-close-dialog]").forEach(button => {
+    button.addEventListener("click", () => document.getElementById(button.dataset.closeDialog).close());
+});
+document.querySelectorAll(".app-dialog").forEach(dialog => {
+    dialog.addEventListener("click", event => {
+        if (event.target === dialog) dialog.close();
+    });
+});
 
 let showAir = false;
 
@@ -19,11 +33,22 @@ let currentRecommendations = [];
 let currentColor = 1;
 let sgfLoaded = false;
 let sgfStopped = false;
+let sgfPredictionRequestId = 0;
+let sgfCurveRequestId = 0;
+let sgfWinrateCurve = [];
+let isPlayingSgf = false;
+let currentSgfIndex = 0;
+let sgfDone = false;
 const sgfFileInput = document.getElementById("sgf-file");
 const loadSgfButton = document.getElementById("load-sgf");
 const stepSgfButton = document.getElementById("step-sgf");
+const playSgfAllButton = document.getElementById("play-sgf-all");
 const sgfProgress = document.getElementById("sgf-progress");
+const sgfResultText = document.getElementById("sgf-result");
 const sgfDiagnostic = document.getElementById("sgf-diagnostic");
+const winrateChartSection = document.getElementById("winrate-chart-section");
+const winrateChart = document.getElementById("winrate-chart");
+const winrateChartStatus = document.getElementById("winrate-chart-status");
 const showLegalCheckbox = document.getElementById("show-legal");
 const showNumEatCheckbox = document.getElementById("show-num-eat");
 canvas.addEventListener("click", function(event) {
@@ -67,7 +92,9 @@ loadSgfButton.addEventListener("click", loadSgf);
 startGameButton.addEventListener("click", startGame);
 passMoveButton.addEventListener("click", passMove);
 showRecommendationsButton.addEventListener("click", showAiRecommendations);
+predictGameResultButton.addEventListener("click", predictGameResult);
 stepSgfButton.addEventListener("click", stepSgf);
+playSgfAllButton.addEventListener("click", playSgfAll);
 
 const rect = canvas.getBoundingClientRect();
 function drawgrids() {
@@ -141,6 +168,7 @@ async function startGame() {
             gameStatus.textContent = data.error || "无法开始对局。";
             return;
         }
+        sessionDialog.close();
         currentColor = data.next_player;
         drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
         showSessionState(data);
@@ -234,6 +262,29 @@ async function passMove() {
 function clearAiRecommendations() {
     currentRecommendations = [];
     recommendationsText.textContent = "";
+    valuePredictionText.textContent = "";
+}
+
+async function predictGameResult() {
+    predictGameResultButton.disabled = true;
+    valuePredictionText.textContent = "正在预测当前局面的胜负…";
+    try {
+        const predictionRoute = sgfLoaded ? "/sgf/prediction" : "/value/prediction";
+        const response = await fetch(predictionRoute);
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || "无法预测当前胜负。");
+        }
+        const black = (data.black_win_probability * 100).toFixed(1);
+        const white = (data.white_win_probability * 100).toFixed(1);
+        const winner = data.predicted_winner === "black" ? "黑棋" : "白棋";
+        valuePredictionText.textContent =
+            `模型预测 ${winner} 更有可能获胜；黑胜概率 ${black}%，白胜概率 ${white}%。`;
+    } catch (error) {
+        valuePredictionText.textContent = error.message;
+    } finally {
+        predictGameResultButton.disabled = false;
+    }
 }
 
 function goPointName(row, col) {
@@ -383,6 +434,10 @@ function drawLegalPoints(legal) {
 
 function showSgfState(data) {
     clearAiRecommendations();
+    currentSgfIndex = data.index || 0;
+    sgfDone = Boolean(data.done);
+    sgfResultText.textContent = describeSgfResult(data.result);
+    if (sgfWinrateCurve.length > currentSgfIndex) showCurvePrediction();
     const captures = data.move?.captured || [];
     drawBoardState(data.board, data.cluster_air, data.islegal, captures, data.num_eat);
     sgfProgress.textContent = data.message || `已处理 ${data.index}/${data.total} 手`;
@@ -409,8 +464,130 @@ function showSgfState(data) {
             "棋盘上橙红色圆圈标出本手提掉的位置。",
         ].join("\n");
     }
-    stepSgfButton.disabled = !sgfLoaded || sgfStopped || data.done;
+    stepSgfButton.disabled = !sgfLoaded || sgfStopped || sgfDone || isPlayingSgf;
+    playSgfAllButton.disabled = !sgfLoaded || sgfStopped || sgfDone || isPlayingSgf;
+    drawWinrateChart();
 }
+
+function describeSgfResult(result) {
+    if (!result) return "棋谱结果：未记录";
+    const normalized = String(result).toUpperCase();
+    if (normalized.startsWith("B+")) return `棋谱结果：黑棋胜（${result}）`;
+    if (normalized.startsWith("W+")) return `棋谱结果：白棋胜（${result}）`;
+    if (normalized === "0" || normalized === "DRAW") return `棋谱结果：和棋（${result}）`;
+    return `棋谱结果：${result}`;
+}
+
+function showCurvePrediction() {
+    const point = sgfWinrateCurve[currentSgfIndex];
+    if (!point) return;
+    const black = (point.black_win_probability * 100).toFixed(1);
+    const white = (100 - Number(black)).toFixed(1);
+    const winner = point.black_win_probability >= 0.5 ? "黑棋" : "白棋";
+    valuePredictionText.textContent =
+        `当前局面预测：${winner}更有可能获胜；黑胜 ${black}%，白胜 ${white}%。`;
+}
+
+async function loadWinrateCurve() {
+    const requestId = ++sgfCurveRequestId;
+    winrateChartSection.hidden = false;
+    winrateChartStatus.textContent = "正在计算整局胜率变化…";
+    sgfWinrateCurve = [];
+    try {
+        const response = await fetch("/sgf/winrate-curve", {
+            signal: AbortSignal.timeout(180000),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || "无法计算胜率曲线。");
+        }
+        if (requestId !== sgfCurveRequestId) return;
+        sgfWinrateCurve = data.curve || [];
+        drawWinrateChart();
+        showCurvePrediction();
+        winrateChartStatus.textContent = "横轴为手数，纵轴为黑棋胜率；圆点表示当前回放位置。";
+    } catch (error) {
+        if (requestId !== sgfCurveRequestId) return;
+        winrateChartStatus.textContent = error.name === "TimeoutError"
+            ? "计算超过 3 分钟。请查看 Flask 终端中的模型加载或推理日志。"
+            : error.name === "AbortError"
+                ? "计算已取消。"
+                : error.message;
+    }
+}
+
+function drawWinrateChart() {
+    if (sgfWinrateCurve.length === 0) return;
+
+    const chartContext = winrateChart.getContext("2d");
+    const width = winrateChart.width;
+    const height = winrateChart.height;
+    const padding = { left: 54, right: 20, top: 18, bottom: 36 };
+    const plotWidth = width - padding.left - padding.right;
+    const plotHeight = height - padding.top - padding.bottom;
+    const lastMove = sgfWinrateCurve[sgfWinrateCurve.length - 1].move || 1;
+    const currentMove = Math.min(sgfWinrateCurve.length - 1, currentSgfIndex);
+    const x = move => padding.left + (move / Math.max(1, lastMove)) * plotWidth;
+    const y = probability => padding.top + (1 - probability) * plotHeight;
+
+    chartContext.clearRect(0, 0, width, height);
+    chartContext.font = "12px Arial";
+    chartContext.fillStyle = "#463522";
+    chartContext.strokeStyle = "#d8c8aa";
+    chartContext.lineWidth = 1;
+
+    [0, 0.25, 0.5, 0.75, 1].forEach(probability => {
+        const lineY = y(probability);
+        chartContext.beginPath();
+        chartContext.moveTo(padding.left, lineY);
+        chartContext.lineTo(width - padding.right, lineY);
+        chartContext.stroke();
+        chartContext.textAlign = "right";
+        chartContext.textBaseline = "middle";
+        chartContext.fillText(`${Math.round(probability * 100)}%`, padding.left - 7, lineY);
+    });
+
+    chartContext.strokeStyle = "#6b4423";
+    chartContext.beginPath();
+    chartContext.moveTo(padding.left, padding.top);
+    chartContext.lineTo(padding.left, height - padding.bottom);
+    chartContext.lineTo(width - padding.right, height - padding.bottom);
+    chartContext.stroke();
+
+    chartContext.strokeStyle = "#1b5e20";
+    chartContext.lineWidth = 2;
+    chartContext.beginPath();
+    sgfWinrateCurve.forEach((point, index) => {
+        const pointX = x(point.move);
+        const pointY = y(point.black_win_probability);
+        if (index === 0) chartContext.moveTo(pointX, pointY);
+        else chartContext.lineTo(pointX, pointY);
+    });
+    chartContext.stroke();
+
+    const selected = sgfWinrateCurve[currentMove];
+    if (selected) {
+        const pointX = x(selected.move);
+        const pointY = y(selected.black_win_probability);
+        chartContext.fillStyle = "#b33a20";
+        chartContext.beginPath();
+        chartContext.arc(pointX, pointY, 5, 0, Math.PI * 2);
+        chartContext.fill();
+        chartContext.textAlign = "left";
+        chartContext.textBaseline = "bottom";
+        chartContext.fillText(
+            `第 ${selected.move} 手：黑胜 ${(selected.black_win_probability * 100).toFixed(1)}%`,
+            Math.min(pointX + 8, width - 175),
+            Math.max(pointY - 8, 14),
+        );
+    }
+
+    chartContext.textAlign = "center";
+    chartContext.textBaseline = "top";
+    chartContext.fillStyle = "#463522";
+    chartContext.fillText("手数", padding.left + plotWidth / 2, height - padding.bottom + 13);
+}
+
 
 async function loadSgf() {
     const file = sgfFileInput.files[0];
@@ -428,11 +605,16 @@ async function loadSgf() {
         if (!response.ok || !data.ok) throw new Error(data.error || "载入失败");
         sgfLoaded = true;
         sgfStopped = false;
+        currentSgfIndex = 0;
+        sgfDone = false;
         showSgfState(data);
         stepSgfButton.disabled = false;
+        playSgfAllButton.disabled = false;
+        loadWinrateCurve();
     } catch (error) {
         sgfLoaded = false;
         stepSgfButton.disabled = true;
+        playSgfAllButton.disabled = true;
         sgfProgress.textContent = `载入失败：${error.message}`;
     } finally {
         loadSgfButton.disabled = false;
@@ -440,7 +622,7 @@ async function loadSgf() {
 }
 
 async function stepSgf() {
-    if (!sgfLoaded || sgfStopped) return;
+    if (!sgfLoaded || sgfStopped || isPlayingSgf) return;
     stepSgfButton.disabled = true;
     try {
         const response = await fetch("/sgf/step", { method: "POST" });
@@ -450,7 +632,32 @@ async function stepSgf() {
     } catch (error) {
         sgfProgress.textContent = `回放失败：${error.message}`;
     } finally {
-        if (sgfLoaded && !sgfStopped) stepSgfButton.disabled = false;
+        stepSgfButton.disabled = !sgfLoaded || sgfStopped || sgfDone;
+        playSgfAllButton.disabled = !sgfLoaded || sgfStopped || sgfDone;
+    }
+}
+
+async function playSgfAll() {
+    if (!sgfLoaded || sgfStopped || isPlayingSgf) return;
+
+    isPlayingSgf = true;
+    playSgfAllButton.disabled = true;
+    stepSgfButton.disabled = true;
+    try {
+        while (sgfLoaded && !sgfStopped) {
+            const response = await fetch("/sgf/step", { method: "POST" });
+            const data = await response.json();
+            if (!response.ok || !data.ok) throw new Error(data.error || "回放失败");
+            showSgfState(data);
+            if (data.done || sgfStopped) break;
+            await new Promise(resolve => setTimeout(resolve, 70));
+        }
+    } catch (error) {
+        sgfProgress.textContent = `回放失败：${error.message}`;
+    } finally {
+        isPlayingSgf = false;
+        stepSgfButton.disabled = !sgfLoaded || sgfStopped || sgfDone;
+        playSgfAllButton.disabled = !sgfLoaded || sgfStopped || sgfDone;
     }
 }
 function drawAir(board, clusterAir) {

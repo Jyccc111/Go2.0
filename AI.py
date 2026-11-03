@@ -1,4 +1,5 @@
 import math
+import os
 import random
 
 import torch
@@ -151,3 +152,91 @@ class AI():
         if action["kind"] == "resign":
             return -1, -1
         return action["row"], action["col"]
+
+
+class ValuePredictor:
+    """Load a trained value checkpoint and estimate the chance Black wins."""
+
+    def __init__(self, checkpoint_path=None):
+        self.device = get_device()
+        checkpoint_path = checkpoint_path or os.environ.get("GO_VALUE_MODEL_PATH")
+
+        if checkpoint_path is None:
+            repo_id = os.environ.get("GO_VALUE_MODEL_REPO_ID", "Jycccc111/Go-Value")
+            filename = os.environ.get(
+                "GO_VALUE_MODEL_FILENAME",
+                "best_value_network.pth",
+            )
+            if not repo_id:
+                raise RuntimeError(
+                    "Set GO_VALUE_MODEL_REPO_ID or GO_VALUE_MODEL_PATH to load the value model."
+                )
+            checkpoint_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                repo_type="model",
+            )
+
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location=self.device,
+            weights_only=True,
+        )
+        state_dict = checkpoint.get("model_state_dict", checkpoint)
+        if state_dict and next(iter(state_dict)).startswith("network."):
+            state_dict = {
+                key.removeprefix("network."): value
+                for key, value in state_dict.items()
+            }
+
+        from Train_value import Value_network
+
+        size = checkpoint.get("size")
+        if size is None and "0.weight" in state_dict:
+            size = state_dict["0.weight"].shape[0]
+        block_indices = {
+            int(key.split(".")[0])
+            for key in state_dict
+            if key.endswith(".conv1.weight") and key.split(".")[0].isdigit()
+        }
+        num_blocks = checkpoint.get("num_blocks", len(block_indices))
+        self.model = Value_network(size=size or 64, num_blocks=num_blocks)
+        self.model.network.load_state_dict(state_dict)
+        self.model.to(self.device)
+        self.model.eval()
+
+    @staticmethod
+    def encode_board(game, color):
+        state = np.zeros((8, 19, 19), dtype=np.int16)
+        state[0] = game.get_black()
+        state[1] = game.get_white()
+        state[2] = game.turn_since
+        state[3] = game.air.board
+        state[4] = game.cluster_air
+        state[5], state[6] = game.get_capture(color)
+        state[7] = game.islegal
+        return state
+
+    def predict_black_win_probability(self, game, color=None):
+        color = game.current_player.value if color is None else int(color)
+        model_input = torch.as_tensor(
+            self.encode_board(game, color),
+            dtype=torch.float32,
+            device=self.device,
+        ).unsqueeze(0)
+        with torch.no_grad():
+            logit = self.model(model_input).reshape(())
+            return float(torch.sigmoid(logit).item())
+
+    def predict_black_win_probabilities(self, states, batch_size=256):
+        """Return Black-win probabilities for encoded 8-plane positions."""
+        probabilities = []
+        with torch.no_grad():
+            for start in range(0, len(states), batch_size):
+                batch = torch.as_tensor(
+                    np.asarray(states[start:start + batch_size]),
+                    dtype=torch.float32,
+                    device=self.device,
+                )
+                probabilities.extend(torch.sigmoid(self.model(batch)).reshape(-1).cpu().tolist())
+        return probabilities

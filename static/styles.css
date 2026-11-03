@@ -1,144 +1,182 @@
+* {
+    box-sizing: border-box;
+}
+
 body {
-    background-color: #f5f1e8;
+    min-height: 100vh;
+    margin: 0;
+    padding: 16px;
+    display: grid;
+    place-items: center;
+    background: #dce9ee;
+    color: #263238;
     font-family: Arial, sans-serif;
     text-align: center;
 }
 
-h1 {
-    color: #333333;
-    font-size: 32px;
-}
-
-#game-status {
-    font-size: 18px;
-    color: #555555;
-}
-
-
 button {
-    padding: 10px 24px;
-    margin: 5px;
-
-    font-size: 16px;
-    font-family: Arial, sans-serif;
-
-    color: #ffffff;
-    background-color: #5c4630;
-
-    border: none;
-    border-radius: 6px;
-
+    padding: 10px 18px;
+    margin: 4px;
+    border: 0;
+    border-radius: 8px;
+    background: #345b68;
+    color: white;
+    font: inherit;
     cursor: pointer;
-    transition: background-color 0.2s;
 }
 
 button:hover {
-    background-color: #806344;
+    background: #24434d;
 }
 
-body {
-    background-color: lightblue;
+button:disabled {
+    opacity: 0.55;
+    cursor: default;
 }
 
 #game-container {
+    width: min(760px, 100%);
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 15px;
+    gap: 10px;
 }
 
+#main-toolbar,
 #controls {
     display: flex;
     flex-wrap: wrap;
     justify-content: center;
-    gap: 10px;
+    gap: 6px;
 }
 
-#ai-recommendations {
-    max-width: min(900px, 94vw);
-    margin: 0 auto 14px;
-    color: #463522;
-    line-height: 1.7;
+#main-toolbar button {
+    background: #fffdf8;
+    color: #345b68;
+    border: 1px solid #9bb3bc;
+}
+
+#main-toolbar button:hover {
+    background: #eef5f7;
+}
+
+#game-status,
+#ai-recommendations,
+#value-prediction {
+    margin: 0;
+    min-height: 1.4em;
+    line-height: 1.4;
 }
 
 #go-board {
-    width: 600px;
-    height: 600px;
-
-    background: linear-gradient(
-        135deg,
-        #e9c783,
-        #d9ad62,
-        #e8c47d
-    );
-
+    width: min(600px, calc(100vw - 32px));
+    height: auto;
+    aspect-ratio: 1;
+    background: linear-gradient(135deg, #e9c783, #d9ad62, #e8c47d);
     border: 2px solid #6b4423;
-    border-radius: 2px;
 }
 
+.app-dialog {
+    width: min(520px, calc(100vw - 28px));
+    max-height: min(88vh, 900px);
+    padding: 18px;
+    border: 1px solid #b8cbd1;
+    border-radius: 14px;
+    background: #f9fcfd;
+    color: #263238;
+    box-shadow: 0 18px 60px #16313b55;
+}
+
+.app-dialog::backdrop {
+    background: #102a334d;
+    backdrop-filter: blur(3px);
+}
+
+.sgf-dialog {
+    width: min(900px, calc(100vw - 28px));
+    overflow: auto;
+}
+
+.dialog-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.dialog-heading h2,
+#winrate-chart-section h2 {
+    margin: 0;
+    font-size: 20px;
+}
+
+.dialog-close {
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    background: transparent;
+    color: #345b68;
+    font-size: 28px;
+}
+
+#session-tools,
 #sgf-tools {
-    width: min(900px, 94vw);
-    margin: 14px auto;
-    padding: 14px;
-    background: #fffdf8;
-    border: 1px solid #d8c8aa;
-    border-radius: 8px;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     justify-content: center;
     gap: 10px;
+    padding: 12px;
+    border-radius: 10px;
+    background: #edf4f6;
 }
 
+#session-tools select,
+#session-tools input,
 #sgf-tools input[type="file"] {
-    max-width: 260px;
+    max-width: 100%;
+    padding: 8px;
+    border: 1px solid #a9bec5;
+    border-radius: 6px;
+    background: white;
+    font-size: 16px;
 }
 
-#sgf-tools label {
-    color: #333;
+#sgf-result,
+#sgf-progress,
+#sgf-diagnostic {
+    flex-basis: 100%;
 }
 
-#sgf-progress {
+#sgf-result {
     font-weight: 600;
-    color: #463522;
 }
 
 #sgf-diagnostic {
-    flex-basis: 100%;
-    max-height: 220px;
+    max-height: 180px;
     overflow: auto;
-    margin: 4px 0 0;
+    margin: 0;
     padding: 10px;
     text-align: left;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    background: #f3efe6;
-    border-radius: 5px;
+    background: #fff;
+    border-radius: 6px;
 }
 
-
-#session-tools {
-    width: min(900px, 94vw);
-    margin: 14px auto;
+#winrate-chart-section {
+    margin-top: 14px;
     padding: 14px;
-    background: #fffdf8;
-    border: 1px solid #d8c8aa;
-    border-radius: 8px;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
+    border-radius: 10px;
+    background: #edf4f6;
 }
 
-#session-tools select,
-#session-tools input {
-    padding: 8px;
-    border: 1px solid #b8a789;
-    border-radius: 5px;
-    font-size: 16px;
+#winrate-chart {
+    width: 100%;
+    height: auto;
+    max-width: 760px;
 }
 
-#session-tools label {
-    color: #333;
+#winrate-chart-status {
+    margin-top: 8px;
 }

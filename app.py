@@ -1,4 +1,5 @@
 from flask import Flask, jsonify, render_template, request
+from threading import Lock
 from Game import Game, Player
 from sgfmill import sgf, sgf_properties
 from GameSession import GameSession, Type_player
@@ -7,6 +8,8 @@ game_session = GameSession()
 game = game_session.game
 sgf_replay = None
 recommendation_ai = None
+value_predictor = None
+value_predictor_lock = Lock()
 
 
 def get_recommendation_ai(color):
@@ -27,6 +30,52 @@ def get_recommendation_ai(color):
     return recommendation_ai
 
 
+def get_value_predictor():
+    global value_predictor
+    if value_predictor is None:
+        with value_predictor_lock:
+            if value_predictor is None:
+                from AI import ValuePredictor
+                app.logger.info("Loading Go-Value checkpoint")
+                value_predictor = ValuePredictor()
+                app.logger.info("Go-Value checkpoint loaded")
+    return value_predictor
+
+
+def build_sgf_winrate_curve(moves):
+    """Replay the main sequence without changing the visible SGF board."""
+    from AI import ValuePredictor
+
+    replay = Game()
+    states = []
+
+    for move_number, move in enumerate(moves, start=1):
+        color = Player(move["color"])
+        replay.current_player = color
+        replay.update_legal_position()
+        states.append(ValuePredictor.encode_board(replay, color.value))
+
+        if move["pass"]:
+            replay.is_pass()
+            continue
+
+        if not replay.play(move["row"], move["col"], color.value):
+            raise ValueError(f"第 {move_number} 手在当前 Game 规则下为非法落子")
+
+    final_color = -moves[-1]["color"] if moves else Player.BLACK.value
+    replay.current_player = Player(final_color)
+    replay.update_legal_position()
+    states.append(ValuePredictor.encode_board(replay, final_color))
+
+    app.logger.info("Predicting win rate for %s SGF positions", len(states))
+    probabilities = get_value_predictor().predict_black_win_probabilities(states)
+    app.logger.info("Finished SGF win-rate inference")
+    return [
+        {"move": move_number, "black_win_probability": probability}
+        for move_number, probability in enumerate(probabilities)
+    ]
+
+
 def replay_payload(message=None):
     replay_game = sgf_replay["game"]
     return {
@@ -36,6 +85,7 @@ def replay_payload(message=None):
         "index": sgf_replay["index"],
         "total": len(sgf_replay["moves"]),
         "failed": sgf_replay["failed"],
+        "result": sgf_replay["result"],
         "done": sgf_replay["index"] >= len(sgf_replay["moves"]),
         "board": replay_game.board.board.tolist(),
         "air": replay_game.air.board.tolist(),
@@ -152,6 +202,85 @@ def ai_recommendations():
     })
 
 
+@app.route("/value/prediction", methods=["GET"])
+def predict_game_result():
+    try:
+        predictor = get_value_predictor()
+        black_probability = predictor.predict_black_win_probability(
+            game_session.game,
+            game_session.next_player.value,
+        )
+    except Exception as exc:
+        return jsonify({
+            "success": False,
+            "error": f"预测胜负失败：{exc}",
+        }), 503
+
+    white_probability = 1.0 - black_probability
+    predicted_winner = "black" if black_probability >= 0.5 else "white"
+    return jsonify({
+        "success": True,
+        "predicted_winner": predicted_winner,
+        "black_win_probability": black_probability,
+        "white_win_probability": white_probability,
+        "next_player": game_session.next_player.value,
+    })
+
+
+@app.route("/sgf/prediction", methods=["GET"])
+def predict_sgf_result():
+    if sgf_replay is None:
+        return jsonify({"success": False, "error": "请先载入 SGF 文件。"}), 400
+
+    replay_game = sgf_replay["game"]
+    next_index = sgf_replay["index"]
+    moves = sgf_replay["moves"]
+    if next_index < len(moves):
+        color = moves[next_index]["color"]
+    elif moves:
+        color = -moves[-1]["color"]
+    else:
+        color = Player.BLACK.value
+
+    try:
+        replay_game.current_player = Player(color)
+        replay_game.update_legal_position()
+        predictor = get_value_predictor()
+        black_probability = predictor.predict_black_win_probability(replay_game, color)
+    except Exception as exc:
+        return jsonify({
+            "success": False,
+            "error": f"预测棋谱局面失败：{exc}",
+        }), 503
+
+    return jsonify({
+        "success": True,
+        "predicted_winner": "black" if black_probability >= 0.5 else "white",
+        "black_win_probability": black_probability,
+        "white_win_probability": 1.0 - black_probability,
+        "next_player": color,
+    })
+
+
+@app.route("/sgf/winrate-curve", methods=["GET"])
+def sgf_winrate_curve():
+    if sgf_replay is None:
+        return jsonify({"success": False, "error": "请先载入 SGF 文件。"}), 400
+
+    try:
+        curve = sgf_replay.get("winrate_curve")
+        if curve is None:
+            curve = build_sgf_winrate_curve(sgf_replay["moves"])
+            sgf_replay["winrate_curve"] = curve
+    except Exception as exc:
+        return jsonify({
+            "success": False,
+            "error": f"计算胜率曲线失败：{exc}",
+        }), 503
+
+    return jsonify({"success": True, "curve": curve})
+
+
 @app.route("/sgf/load", methods=["POST"])
 def load_sgf():
     global sgf_replay
@@ -163,6 +292,8 @@ def load_sgf():
     try:
         parsed = sgf.Sgf_game.from_bytes(uploaded.read())
         root = parsed.get_root()
+        raw_result = root.get_raw("RE") if "RE" in root.properties() else None
+        result = raw_result.decode("utf-8", "replace") if raw_result else None
         size_raw = root.get_raw("SZ") if "SZ" in root.properties() else b"19"
         size = int(size_raw.decode("ascii"))
         if size != 19:
@@ -204,11 +335,13 @@ def load_sgf():
 
     sgf_replay = {
         "filename": uploaded.filename,
+        "result": result,
         "game": Game(),
         "moves": moves,
         "index": 0,
         "failed": False,
         "last_move": None,
+        "winrate_curve": None,
     }
     return jsonify(replay_payload(f"已载入 {uploaded.filename}，共 {len(moves)} 手。"))
 
@@ -226,12 +359,12 @@ def step_sgf():
     replay_game = sgf_replay["game"]
     color = move["color"]
     color_name = "黑" if color == 1 else "白"
+    replay_game.current_player = Player(color)
+    replay_game.update_legal_position()
 
     if move["pass"]:
-        # current_player 表示刚刚行动的一方；更新合法点表时取其对手。
-        replay_game.current_player = Player(color)
         replay_game.lasteated.fill(0)
-        replay_game.update_legal_position()
+        replay_game.is_pass()
         success = True
         reason = "pass"
     else:

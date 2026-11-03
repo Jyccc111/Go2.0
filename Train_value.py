@@ -248,6 +248,11 @@ class Value_network(nn.Module):
 
             train_loss = 0
             train_samples = 0
+            train_confusion_matrix = torch.zeros(
+                (2, 2),
+                dtype=torch.long,
+                device=device,
+            )
 
             for i, filename in enumerate(train_files):
 
@@ -290,6 +295,22 @@ class Value_network(nn.Module):
                     self.optimizer.zero_grad()
 
                     output = self(states_batch)
+
+                    # Count this batch's predictions before updating weights.
+                    predicted = (output >= 0).long()
+                    actual = results_batch.long()
+                    train_confusion_matrix[0, 0] += (
+                        (actual == 0) & (predicted == 0)
+                    ).sum()
+                    train_confusion_matrix[0, 1] += (
+                        (actual == 0) & (predicted == 1)
+                    ).sum()
+                    train_confusion_matrix[1, 0] += (
+                        (actual == 1) & (predicted == 0)
+                    ).sum()
+                    train_confusion_matrix[1, 1] += (
+                        (actual == 1) & (predicted == 1)
+                    ).sum()
 
                     loss = criterion(
                         output,
@@ -338,6 +359,11 @@ class Value_network(nn.Module):
             if train_samples == 0:
                 raise ValueError("training split contains no samples")
             train_loss /= train_samples
+            print(
+                "Train confusion matrix "
+                "(rows=true [White, Black], columns=predicted [White, Black]):"
+            )
+            print(train_confusion_matrix.cpu().tolist())
 
             # ======================================
             # VALIDATION
@@ -347,6 +373,11 @@ class Value_network(nn.Module):
 
             val_loss = 0
             val_samples = 0
+            confusion_matrix = torch.zeros(
+                (2, 2),
+                dtype=torch.long,
+                device=device,
+            )
 
             with torch.no_grad():
 
@@ -379,10 +410,28 @@ class Value_network(nn.Module):
 
                         output = self(states_batch)
 
+                        # BCEWithLogitsLoss receives raw logits. A logit of 0
+                        # corresponds to a predicted probability of 0.5.
+                        predicted = (output >= 0).long()
+                        actual = results_batch.long()
+                        confusion_matrix[0, 0] += (
+                            (actual == 0) & (predicted == 0)
+                        ).sum()
+                        confusion_matrix[0, 1] += (
+                            (actual == 0) & (predicted == 1)
+                        ).sum()
+                        confusion_matrix[1, 0] += (
+                            (actual == 1) & (predicted == 0)
+                        ).sum()
+                        confusion_matrix[1, 1] += (
+                            (actual == 1) & (predicted == 1)
+                        ).sum()
+
                         loss = criterion(
                             output,
                             results_batch
                         )
+                        
 
                         batch_size_actual = states_batch.size(0)
 
@@ -415,6 +464,11 @@ class Value_network(nn.Module):
             if val_samples == 0:
                 raise ValueError("validation split contains no samples")
             val_loss /= val_samples
+            print(
+                "Validation confusion matrix "
+                "(rows=true [White, Black], columns=predicted [White, Black]):"
+            )
+            print(confusion_matrix.cpu().tolist())
 
             # ======================================
             # Learning Rate

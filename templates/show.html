@@ -3,52 +3,73 @@
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Go 棋谱合法性调试</title>
-        <link rel="stylesheet"
-            href="{{ url_for('static', filename='styles.css') }}">
+        <title>围棋</title>
+        <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
     </head>
     <body>
-        <h1>围棋棋谱调试</h1>
-        <p id="color">当前棋手：</p>
-        <section id="session-tools" aria-label="对局设置">
-            <label for="player-black">黑棋</label>
-            <select id="player-black">
-                <option value="1" selected>人类</option>
-                <option value="0">AI</option>
-            </select>
-            <label for="player-white">白棋</label>
-            <select id="player-white">
-                <option value="1" selected>人类</option>
-                <option value="0">AI</option>
-            </select>
-            <label for="komi">贴目</label>
-            <input id="komi" type="number" value="6.5" step="0.5">
-            <button id="start-game" type="button">开始新对局</button>
-            <span id="game-status" aria-live="polite">默认人类对弈；选择执棋方后可开始新对局。</span>
-        </section>
-        <section id="sgf-tools">
-            <label for="sgf-file">选择 SGF 棋谱</label>
-            <input id="sgf-file" type="file" accept=".sgf">
-            <button id="load-sgf" type="button">载入棋谱</button>
-            <button id="step-sgf" type="button" disabled>下一手</button>
-            <label><input id="show-legal" type="checkbox">显示 Game 标记的合法点</label>
-            <label><input id="show-num-eat" type="checkbox">显示 num_eat（黑/白）</label>
-            <small>黑色数字 = num_eat[0]；红色数字 = num_eat[1]。</small>
-            <span id="sgf-progress">尚未载入棋谱</span>
-            <pre id="sgf-diagnostic" aria-live="polite"></pre>
-        </section>
-        <div id="game-container">
-        <canvas id="go-board" width="600" height="600"></canvas>
+        <main id="game-container">
+            <div id="main-toolbar">
+                <button id="open-session-dialog" type="button">新对局</button>
+                <button id="open-sgf-dialog" type="button">棋谱 / 胜率</button>
+            </div>
+            <p id="game-status" aria-live="polite">黑棋行棋</p>
+            <canvas id="go-board" width="600" height="600" aria-label="围棋棋盘"></canvas>
+            <div id="controls">
+                <button id="pass-move" type="button">Pass</button>
+                <button id="toggle-air" type="button">显示气数</button>
+                <button id="show-ai-recommendations" type="button">AI 推荐</button>
+                <button id="predict-game-result" type="button">预测胜负</button>
+            </div>
+            <div id="ai-recommendations" aria-live="polite"></div>
+            <div id="value-prediction" aria-live="polite"></div>
+        </main>
 
-        <div id="controls">
-            <button id="pass-move" type="button">Pass</button>
-            <button type="button">Reset</button>
-            <button id="toggle-air">显示气数</button>
-            <button id="show-ai-recommendations" type="button">查看 AI 推荐的 5 个位置</button>
-        </div>
-        <div id="ai-recommendations" aria-live="polite"></div>
-        
+        <dialog id="session-dialog" class="app-dialog" aria-labelledby="session-dialog-title">
+            <div class="dialog-heading">
+                <h2 id="session-dialog-title">开始新对局</h2>
+                <button class="dialog-close" type="button" data-close-dialog="session-dialog" aria-label="关闭">×</button>
+            </div>
+            <section id="session-tools" aria-label="对局设置">
+                <label for="player-black">黑棋</label>
+                <select id="player-black">
+                    <option value="1" selected>人类</option>
+                    <option value="0">AI</option>
+                </select>
+                <label for="player-white">白棋</label>
+                <select id="player-white">
+                    <option value="1" selected>人类</option>
+                    <option value="0">AI</option>
+                </select>
+                <label for="komi">贴目</label>
+                <input id="komi" type="number" value="6.5" step="0.5">
+                <button id="start-game" type="button">开始新对局</button>
+            </section>
+        </dialog>
+
+        <dialog id="sgf-dialog" class="app-dialog sgf-dialog" aria-labelledby="sgf-dialog-title">
+            <div class="dialog-heading">
+                <h2 id="sgf-dialog-title">棋谱与胜率分析</h2>
+                <button class="dialog-close" type="button" data-close-dialog="sgf-dialog" aria-label="关闭">×</button>
+            </div>
+            <section id="sgf-tools">
+                <label for="sgf-file">选择 SGF 棋谱</label>
+                <input id="sgf-file" type="file" accept=".sgf">
+                <button id="load-sgf" type="button">载入棋谱</button>
+                <button id="step-sgf" type="button" disabled>下一手</button>
+                <button id="play-sgf-all" type="button" disabled>播放到最后</button>
+                <label><input id="show-legal" type="checkbox">显示合法点</label>
+                <label><input id="show-num-eat" type="checkbox">显示 num_eat</label>
+                <span id="sgf-result" aria-live="polite">棋谱结果：尚未载入</span>
+                <span id="sgf-progress">尚未载入棋谱</span>
+                <pre id="sgf-diagnostic" aria-live="polite"></pre>
+            </section>
+            <section id="winrate-chart-section" hidden aria-label="胜率变化曲线">
+                <h2>黑棋胜率变化</h2>
+                <canvas id="winrate-chart" width="760" height="260" aria-label="随手数变化的黑棋胜率曲线"></canvas>
+                <div id="winrate-chart-status" aria-live="polite"></div>
+            </section>
+        </dialog>
+
         <script src="{{ url_for('static', filename='script.js') }}"></script>
     </body>
 </html>
-
