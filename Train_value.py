@@ -255,7 +255,11 @@ class Value_network(nn.Module):
             )
 
             for i, filename in enumerate(train_files):
-
+                train_confusion_matrix = torch.zeros(
+                                (2, 2),
+                                dtype=torch.long,
+                                device=device,
+                            )
                 print(
                     f"[Train {i + 1}/{len(train_files)}] "
                     f"正在读取: {filename}"
@@ -336,7 +340,11 @@ class Value_network(nn.Module):
                     f"Chunk average loss: {chunk_loss / chunk_samples:.4f}"
                     if chunk_samples else "Chunk average loss: n/a (empty chunk)"
                 )
-
+                print(
+                    "Train confusion matrix "
+                    "(rows=true [White, Black], columns=predicted [White, Black]):"
+                )
+                print(train_confusion_matrix.cpu().tolist())
                 # -------------------------------
                 # Free memory
                 # -------------------------------
@@ -359,11 +367,7 @@ class Value_network(nn.Module):
             if train_samples == 0:
                 raise ValueError("training split contains no samples")
             train_loss /= train_samples
-            print(
-                "Train confusion matrix "
-                "(rows=true [White, Black], columns=predicted [White, Black]):"
-            )
-            print(train_confusion_matrix.cpu().tolist())
+            
 
             # ======================================
             # VALIDATION
