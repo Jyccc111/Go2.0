@@ -31,6 +31,21 @@ def validate_value_arrays(states, results):
         raise ValueError("results must be binary labels: 1 for Black win, 0 for White win")
 
 
+def split_game_chunks(files, val_ratio, seed):
+    """Split whole chunks from Data_uploader.py, which flushes between SGF games."""
+    files = sorted(os.path.realpath(filename) for filename in files)
+    if len(files) != len(set(files)):
+        raise ValueError("files contains duplicate chunk paths")
+    if len(files) < 2:
+        raise ValueError("at least two game-preserving chunks are required")
+    if not 0 < val_ratio < 1:
+        raise ValueError("val_ratio must be between 0 and 1")
+
+    random.Random(seed).shuffle(files)
+    train_count = max(1, min(len(files) - 1, int(len(files) * (1 - val_ratio))))
+    return files[:train_count], files[train_count:]
+
+
 def build_mixed_pool(files, samples_per_chunk, max_pool_samples, seed, diagnostic=None):
     """Sample each training chunk once, then reuse and shuffle the bounded pool."""
     if max_pool_samples < len(files):
@@ -228,7 +243,9 @@ class Value_network(nn.Module):
         """Train on a fixed, shuffled cross-chunk pool by default.
 
         samples_per_chunk and max_pool_samples bound the mixed training pool.
-        Validation still uses all validation positions. Use training_mode='chunk'
+        Supply chunks from one Data_uploader.py export. val_ratio applies to
+        chunks, each of which contains only whole games.
+        Validation uses all supplied validation positions. Use training_mode='chunk'
         to run the original sequential training with optional retention probes.
         """
 
@@ -239,12 +256,6 @@ class Value_network(nn.Module):
             raise ValueError("epochs must be a positive integer")
         if batch_size <= 0:
             raise ValueError("batch_size must be a positive integer")
-        if not files:
-            raise ValueError("files must contain at least two data chunks")
-        if not 0 < val_ratio < 1:
-            raise ValueError("val_ratio must be between 0 and 1")
-        if len(files) < 2:
-            raise ValueError("at least two data chunks are required for train/validation split")
         if training_mode not in ("mixed", "chunk"):
             raise ValueError("training_mode must be 'mixed' or 'chunk'")
         for name, value in (("samples_per_chunk", samples_per_chunk),
@@ -261,19 +272,8 @@ class Value_network(nn.Module):
         # 划分 Train / Validation
         # ==========================================
 
-        files = sorted(os.path.realpath(filename) for filename in files)
-        if len(files) != len(set(files)):
-            raise ValueError("files contains duplicate chunk paths")
-        split_rng = random.Random(split_seed)
-        split_rng.shuffle(files)
-
-        split = int(len(files) * (1 - val_ratio))
-
-        train_files = files[:split]
-        val_files = files[split:]
-
-        if not train_files or not val_files:
-            raise ValueError("the selected val_ratio produced an empty train or validation split")
+        train_files, val_files = split_game_chunks(files, val_ratio, split_seed)
+        train_rng = random.Random(split_seed)
 
         print(
             f"Train chunks: {len(train_files)}"
@@ -343,7 +343,7 @@ class Value_network(nn.Module):
 
             self.train()
 
-            split_rng.shuffle(train_files)
+            train_rng.shuffle(train_files)
 
             train_loss = 0
             train_samples = 0
