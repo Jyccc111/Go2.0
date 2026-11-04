@@ -235,18 +235,18 @@ class Value_network(nn.Module):
             diagnostic_report="value_diagnostics.jsonl",
             split_seed=42,
             upload_models=True,
-            training_mode="mixed",
+            training_mode="chunk",
             samples_per_chunk=4096,
             max_pool_samples=65536,
             trace_chunk_probes=True
         ):
-        """Train on a fixed, shuffled cross-chunk pool by default.
+        """Train on every training position once per epoch by default.
 
-        samples_per_chunk and max_pool_samples bound the mixed training pool.
         Supply chunks from one Data_uploader.py export. val_ratio applies to
-        chunks, each of which contains only whole games.
-        Validation uses all supplied validation positions. Use training_mode='chunk'
-        to run the original sequential training with optional retention probes.
+        chunks, each of which contains only whole games. Training chunks and
+        positions within each chunk are shuffled on every epoch.
+        Validation uses all supplied validation positions.
+        Explicit training_mode='mixed' enables the optional bounded sample pool.
         """
 
         api = HfApi() if upload_models else None
