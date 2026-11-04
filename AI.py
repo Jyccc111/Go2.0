@@ -115,17 +115,17 @@ class AI():
         ]
 
     def predict_action(self, game, color=None):
-        """Return the highest-scoring legal move, pass, or resignation."""
+        """Return the highest-scoring legal move or pass.
+
+        Automatic resignation is disabled so self-play games reach a rules-based
+        terminal state and can be scored consistently.
+        """
         output = self._policy_output(game, color)
         candidates = self._legal_move_scores(output)
         best_score = candidates[0][0] if candidates else float("-inf")
         pass_score = output[361].item()
-        resign_score = output[362].item()
-
-        if pass_score >= best_score and pass_score >= resign_score:
+        if pass_score >= best_score:
             return {"kind": "pass"}
-        if resign_score >= best_score:
-            return {"kind": "resign"}
         if candidates:
             # Keep play close to the policy's best move while allowing variety:
             # sample among the top five legal points with a softmax weighting.
@@ -150,7 +150,8 @@ class AI():
         if action["kind"] == "pass":
             return 0, 0
         if action["kind"] == "resign":
-            return -1, -1
+            # Keep legacy callers from triggering an automatic resignation.
+            return 0, 0
         return action["row"], action["col"]
 
 

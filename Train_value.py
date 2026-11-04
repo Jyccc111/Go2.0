@@ -1,4 +1,6 @@
 import gc
+import os
+from value_diagnostics import ValueDiagnostics
 from huggingface_hub import HfApi
 import torch
 from torch import nn
@@ -35,6 +37,8 @@ class GoDataset(Dataset):
             )
         if len(self.states) != len(self.results):
             raise ValueError("states and results must contain the same number of samples")
+        if len(self.results) == 0:
+            raise ValueError("dataset contains no samples")
         if not torch.all((self.results == 0) | (self.results == 1)):
             raise ValueError("results must be binary labels: 1 for Black win, 0 for White win")
 
@@ -161,10 +165,16 @@ class Value_network(nn.Module):
             data_repo_id,
             model_repo_id,
             val_ratio=0.2,
-            batch_size=512
+            batch_size=512,
+            diagnostics=True,
+            diagnostic_chunks=3,
+            diagnostic_samples=1024,
+            diagnostic_report="value_diagnostics.jsonl",
+            split_seed=42,
+            upload_models=True
         ):
 
-        api = HfApi()
+        api = HfApi() if upload_models else None
         self.to(device)
 
         if epochs <= 0:
@@ -187,8 +197,11 @@ class Value_network(nn.Module):
         # 划分 Train / Validation
         # ==========================================
 
-        files = files.copy()
-        random.shuffle(files)
+        files = sorted(os.path.realpath(filename) for filename in files)
+        if len(files) != len(set(files)):
+            raise ValueError("files contains duplicate chunk paths")
+        split_rng = random.Random(split_seed)
+        split_rng.shuffle(files)
 
         split = int(len(files) * (1 - val_ratio))
 
@@ -205,6 +218,16 @@ class Value_network(nn.Module):
         print(
             f"Validation chunks: {len(val_files)}"
         )
+
+        print(f"Split seed: {split_seed}")
+        print("Train files:", train_files)
+        print("Validation files:", val_files)
+        diagnostic = None
+        if diagnostics:
+            diagnostic = ValueDiagnostics(
+                train_files, val_files, split_seed, diagnostic_chunks,
+                diagnostic_samples, diagnostic_report,
+            )
 
         # ==========================================
         # Learning Rate Scheduler
@@ -244,11 +267,11 @@ class Value_network(nn.Module):
 
             self.train()
 
-            random.shuffle(train_files)
+            split_rng.shuffle(train_files)
 
             train_loss = 0
             train_samples = 0
-            train_confusion_matrix = torch.zeros(
+            epoch_confusion_matrix = torch.zeros(
                 (2, 2),
                 dtype=torch.long,
                 device=device,
@@ -269,15 +292,17 @@ class Value_network(nn.Module):
                 # Load
                 # -------------------------------
 
-                data = np.load(filename)
-
-                states = data["states"]
-                results = data["results"]
+                with np.load(filename, allow_pickle=False) as data:
+                    states = data["states"]
+                    results = data["results"]
 
                 dataset = GoDataset(
                     states,
                     results
                 )
+
+                if diagnostic is not None and epoch == 0:
+                    diagnostic.capture("train", filename, states, results)
 
                 loader = DataLoader(
                     dataset,
@@ -321,6 +346,8 @@ class Value_network(nn.Module):
                         results_batch
                     )
 
+                    if not torch.isfinite(loss):
+                        raise ValueError(f"Non-finite training loss in {filename}")
                     loss.backward()
 
                     self.optimizer.step()
@@ -341,10 +368,11 @@ class Value_network(nn.Module):
                     if chunk_samples else "Chunk average loss: n/a (empty chunk)"
                 )
                 print(
-                    "Train confusion matrix "
+                    "Online train confusion matrix "
                     "(rows=true [White, Black], columns=predicted [White, Black]):"
                 )
                 print(train_confusion_matrix.cpu().tolist())
+                epoch_confusion_matrix += train_confusion_matrix
                 # -------------------------------
                 # Free memory
                 # -------------------------------
@@ -392,15 +420,20 @@ class Value_network(nn.Module):
                         f"正在读取: {filename}"
                     )
 
-                    data = np.load(filename)
-
-                    states = data["states"]
-                    results = data["results"]
+                    with np.load(filename, allow_pickle=False) as data:
+                        states = data["states"]
+                        results = data["results"]
 
                     dataset = GoDataset(
                         states,
                         results
                     )
+
+                    if diagnostic is not None and epoch == 0:
+                        diagnostic.capture("val", filename, states, results)
+                    chunk_val_loss = 0.0
+                    chunk_val_correct = 0
+                    chunk_val_samples = 0
 
                     loader = DataLoader(
                         dataset,
@@ -444,7 +477,22 @@ class Value_network(nn.Module):
                                 * batch_size_actual
                         )
 
+                        if not torch.isfinite(loss):
+                            raise ValueError(f"Non-finite validation loss in {filename}")
                         val_samples += batch_size_actual
+                        chunk_val_loss += loss.item() * batch_size_actual
+                        chunk_val_correct += int((predicted == actual).sum().item())
+                        chunk_val_samples += batch_size_actual
+
+                    print(f"[Val chunk] loss={chunk_val_loss / chunk_val_samples:.4f}, "
+                          f"accuracy={chunk_val_correct / chunk_val_samples:.2%}")
+                    if diagnostic is not None:
+                        diagnostic.record({
+                            "event": "validation_chunk", "epoch": epoch + 1,
+                            "file": filename, "samples": chunk_val_samples,
+                            "loss": chunk_val_loss / chunk_val_samples,
+                            "accuracy": chunk_val_correct / chunk_val_samples,
+                        })
 
                     # -------------------------------
                     # Free memory
@@ -473,6 +521,20 @@ class Value_network(nn.Module):
                 "(rows=true [White, Black], columns=predicted [White, Black]):"
             )
             print(confusion_matrix.cpu().tolist())
+
+            print(f"Online train accuracy: "
+                  f"{epoch_confusion_matrix.diag().sum().item() / train_samples:.2%}")
+            print(f"Validation accuracy: "
+                  f"{confusion_matrix.diag().sum().item() / val_samples:.2%}")
+            diagnostic_metrics = None
+            if diagnostic is not None:
+                diagnostic_metrics = diagnostic.run(self, epoch + 1, batch_size)
+                diagnostic.record({
+                    "event": "epoch_totals", "epoch": epoch + 1,
+                    "online_train_loss": train_loss, "validation_loss": val_loss,
+                    "online_train_confusion": epoch_confusion_matrix.cpu().tolist(),
+                    "validation_confusion": confusion_matrix.cpu().tolist(),
+                })
 
             # ======================================
             # Learning Rate
@@ -528,6 +590,10 @@ class Value_network(nn.Module):
             # ======================================
 
             checkpoint = {
+                "train_files": sorted(train_files),
+                "val_files": val_files,
+                "split_seed": split_seed,
+                "diagnostic_metrics": diagnostic_metrics,
                 "size": self.size,
                 "num_blocks": self.num_blocks,
 
@@ -564,12 +630,13 @@ class Value_network(nn.Module):
                 filename_last
             )
 
-            api.upload_file(
-                path_or_fileobj=filename_last,
-                path_in_repo=filename_last,
-                repo_id=model_repo_id,
-                repo_type="model"
-            )
+            if upload_models:
+                api.upload_file(
+                    path_or_fileobj=filename_last,
+                    path_in_repo=filename_last,
+                    repo_id=model_repo_id,
+                    repo_type="model"
+                )
 
             print(
                 "✓ 已保存最新模型"
@@ -587,12 +654,13 @@ class Value_network(nn.Module):
                     filename_best
                 )
 
-                api.upload_file(
-                    path_or_fileobj=filename_best,
-                    path_in_repo=filename_best,
-                    repo_id=model_repo_id,
-                    repo_type="model"
-                )
+                if upload_models:
+                    api.upload_file(
+                        path_or_fileobj=filename_best,
+                        path_in_repo=filename_best,
+                        repo_id=model_repo_id,
+                        repo_type="model"
+                    )
 
                 print(
                     "★ 保存新的最佳模型"

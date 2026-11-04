@@ -178,7 +178,8 @@ class GameSession:
                 if kind == "pass":
                     return self.pass_turn(color)
                 if kind == "resign":
-                    return self.resign(color)
+                    # Ignore automatic resignation actions during AI play.
+                    return self.pass_turn(color)
                 if kind != "move":
                     return {"success": False, "error": "AI returned an invalid action."}
                 row, col = action.get("row"), action.get("col")
@@ -187,10 +188,10 @@ class GameSession:
                 # coordinates and reserve (0, 0) / (-1, -1) for pass/resign.
                 move = ai.predict_move(self.game)
                 if move is None:
-                    return self.resign(color)
+                    return self.pass_turn(color)
                 row, col = move
                 if (row, col) == (-1, -1):
-                    return self.resign(color)
+                    return self.pass_turn(color)
                 if (row, col) == (0, 0):
                     return self.pass_turn(color)
         except Exception as exc:
