@@ -184,8 +184,8 @@ class Value_network(nn.Module):
         )
         self.optimizer = torch.optim.AdamW(
             self.network.parameters(),
-            lr=1e-3,
-            weight_decay=1e-4
+            lr=1e-4,
+            weight_decay=1e-5
         )
     def forward(self, x):
         return self.network(x)
