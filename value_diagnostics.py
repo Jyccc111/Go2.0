@@ -20,6 +20,7 @@ class ValueDiagnostics:
         self.selected = {}
         self.parts = {"train": [], "val": []}
         self.probes = {}
+        self.train_file_probes = {}
         for split, files in (("train", train_files), ("val", val_files)):
             indices = self.rng.choice(len(files), min(chunks, len(files)), replace=False)
             self.selected[split] = {files[int(i)] for i in indices}
@@ -39,7 +40,7 @@ class ValueDiagnostics:
             ) + "\n")
 
     def capture(self, split, filename, states, results):
-        """Called on the first epoch while each chunk is already in memory."""
+        """Capture training-pool samples or chunk samples during their first load."""
         labels = np.asarray(results).reshape(-1)
         black = int(np.count_nonzero(labels == 1))
         print(f"[Data {split}] N={len(labels)}, 黑胜={black / len(labels):.2%}, "
@@ -78,7 +79,25 @@ class ValueDiagnostics:
             print(f"  输入检查发现异常 {checks}")
         self.record({"event": "features", "split": split, "file": filename,
                      "checks": checks, **stats})
-        self.parts[split].append((sampled, labels[indices].astype(np.float32)))
+        sampled_labels = labels[indices].astype(np.float32)
+        self.parts[split].append((sampled, sampled_labels))
+        if split == "train":
+            self.train_file_probes[filename] = (
+                torch.from_numpy(sampled), torch.from_numpy(sampled_labels)
+            )
+
+    def trace_training(self, model, epoch, after_file, batch_size):
+        """Follow previously captured positions after every chunk update."""
+        for filename, (states, labels) in self.train_file_probes.items():
+            values = self.evaluate(model, states, labels, batch_size)
+            print(f"[Retention] after={after_file}\n"
+                  f"  probe={filename}, loss={values['loss']:.4f}, "
+                  f"accuracy={values['accuracy']:.2%}")
+            self.record({
+                "event": "chunk_probe", "epoch": epoch,
+                "after_file": after_file, "probe_file": filename,
+                "samples": len(labels), "metrics": values,
+            })
 
     def run(self, model, epoch, batch_size):
         if not self.probes:

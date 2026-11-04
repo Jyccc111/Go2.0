@@ -20,6 +20,54 @@ def get_device():
 
 device = get_device()
 
+
+def validate_value_arrays(states, results):
+    labels = np.asarray(results).reshape(-1)
+    if states.ndim != 4 or tuple(states.shape[1:]) != (8, 19, 19):
+        raise ValueError(f"states must have shape (N, 8, 19, 19); got {states.shape}")
+    if len(states) != len(labels) or not len(labels):
+        raise ValueError("states and results must have the same non-zero length")
+    if not np.all((labels == 0) | (labels == 1)):
+        raise ValueError("results must be binary labels: 1 for Black win, 0 for White win")
+
+
+def build_mixed_pool(files, samples_per_chunk, max_pool_samples, seed, diagnostic=None):
+    """Sample each training chunk once, then reuse and shuffle the bounded pool."""
+    if max_pool_samples < len(files):
+        raise ValueError("max_pool_samples must allow at least one sample per training chunk")
+    rng = np.random.default_rng(seed)
+    quota, remainder = divmod(max_pool_samples, len(files))
+    state_parts = []
+    label_parts = []
+    for index, filename in enumerate(sorted(files)):
+        print(f"[Pool {index + 1}/{len(files)}] {filename}")
+        with np.load(filename, allow_pickle=False) as data:
+            states = data["states"]
+            labels = data["results"].reshape(-1)
+        validate_value_arrays(states, labels)
+        count = min(len(labels), samples_per_chunk, quota + (index < remainder))
+        indices = rng.choice(len(labels), count, replace=False)
+        sampled_states = states[indices]
+        sampled_labels = labels[indices]
+        if not np.isfinite(sampled_states).all():
+            raise ValueError(f"Non-finite input in sampled pool from {filename}")
+        state_parts.append(sampled_states)
+        label_parts.append(sampled_labels)
+        if diagnostic is not None:
+            diagnostic.record({
+                "event": "pool_selection", "file": filename,
+                "source_samples": len(labels), "pool_samples": count,
+                "source_black": int(np.count_nonzero(labels == 1)),
+                "source_indices": indices.tolist(),
+            })
+            # The training probe must contain positions actually used for updates.
+            diagnostic.capture("train", filename, sampled_states, sampled_labels)
+        del states, labels
+    dataset = GoDataset(np.concatenate(state_parts), np.concatenate(label_parts))
+    print(f"Mixed pool: {len(dataset):,} positions from {len(files)} training chunks")
+    return dataset
+
+
 class GoDataset(Dataset):
 
     def __init__(self, states, results):
@@ -171,8 +219,18 @@ class Value_network(nn.Module):
             diagnostic_samples=1024,
             diagnostic_report="value_diagnostics.jsonl",
             split_seed=42,
-            upload_models=True
+            upload_models=True,
+            training_mode="mixed",
+            samples_per_chunk=4096,
+            max_pool_samples=65536,
+            trace_chunk_probes=True
         ):
+        """Train on a fixed, shuffled cross-chunk pool by default.
+
+        samples_per_chunk and max_pool_samples bound the mixed training pool.
+        Validation still uses all validation positions. Use training_mode='chunk'
+        to run the original sequential training with optional retention probes.
+        """
 
         api = HfApi() if upload_models else None
         self.to(device)
@@ -187,6 +245,12 @@ class Value_network(nn.Module):
             raise ValueError("val_ratio must be between 0 and 1")
         if len(files) < 2:
             raise ValueError("at least two data chunks are required for train/validation split")
+        if training_mode not in ("mixed", "chunk"):
+            raise ValueError("training_mode must be 'mixed' or 'chunk'")
+        for name, value in (("samples_per_chunk", samples_per_chunk),
+                            ("max_pool_samples", max_pool_samples)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
 
         # The data uploader stores 1 for a Black win and 0 for a White win.
         # The network emits one logit, so BCEWithLogitsLoss is the matching,
@@ -227,6 +291,18 @@ class Value_network(nn.Module):
             diagnostic = ValueDiagnostics(
                 train_files, val_files, split_seed, diagnostic_chunks,
                 diagnostic_samples, diagnostic_report,
+            )
+            diagnostic.record({
+                "event": "training_config", "training_mode": training_mode,
+                "samples_per_chunk": samples_per_chunk,
+                "max_pool_samples": max_pool_samples,
+                "trace_chunk_probes": trace_chunk_probes,
+            })
+
+        mixed_dataset = None
+        if training_mode == "mixed":
+            mixed_dataset = build_mixed_pool(
+                train_files, samples_per_chunk, max_pool_samples, split_seed, diagnostic,
             )
 
         # ==========================================
@@ -277,32 +353,40 @@ class Value_network(nn.Module):
                 device=device,
             )
 
-            for i, filename in enumerate(train_files):
+            if training_mode == "mixed":
+                training_groups = [("mixed_pool", mixed_dataset)]
+            else:
+                training_groups = [(filename, None) for filename in train_files]
+            if diagnostic is not None:
+                diagnostic.record({
+                    "event": "training_order", "epoch": epoch + 1,
+                    "groups": [filename for filename, _ in training_groups],
+                })
+
+            for i, (filename, prepared_dataset) in enumerate(training_groups):
                 train_confusion_matrix = torch.zeros(
                                 (2, 2),
                                 dtype=torch.long,
                                 device=device,
                             )
                 print(
-                    f"[Train {i + 1}/{len(train_files)}] "
-                    f"正在读取: {filename}"
+                    f"[Train {i + 1}/{len(training_groups)}] "
+                    f"训练数据: {filename}"
                 )
 
                 # -------------------------------
                 # Load
                 # -------------------------------
 
-                with np.load(filename, allow_pickle=False) as data:
-                    states = data["states"]
-                    results = data["results"]
-
-                dataset = GoDataset(
-                    states,
-                    results
-                )
-
-                if diagnostic is not None and epoch == 0:
-                    diagnostic.capture("train", filename, states, results)
+                dataset = prepared_dataset
+                if dataset is None:
+                    with np.load(filename, allow_pickle=False) as data:
+                        states = data["states"]
+                        results = data["results"]
+                    dataset = GoDataset(states, results)
+                    if diagnostic is not None and epoch == 0:
+                        diagnostic.capture("train", filename, states, results)
+                    del states, results
 
                 loader = DataLoader(
                     dataset,
@@ -364,7 +448,7 @@ class Value_network(nn.Module):
                     chunk_samples += batch_size_actual
 
                 print(
-                    f"Chunk average loss: {chunk_loss / chunk_samples:.4f}"
+                    f"Training group average loss: {chunk_loss / chunk_samples:.4f}"
                     if chunk_samples else "Chunk average loss: n/a (empty chunk)"
                 )
                 print(
@@ -373,13 +457,12 @@ class Value_network(nn.Module):
                 )
                 print(train_confusion_matrix.cpu().tolist())
                 epoch_confusion_matrix += train_confusion_matrix
+                if diagnostic is not None and training_mode == "chunk" and trace_chunk_probes:
+                    diagnostic.trace_training(self, epoch + 1, filename, batch_size)
                 # -------------------------------
                 # Free memory
                 # -------------------------------
 
-                del data
-                del states
-                del results
                 del dataset
                 del loader
 
@@ -531,6 +614,7 @@ class Value_network(nn.Module):
                 diagnostic_metrics = diagnostic.run(self, epoch + 1, batch_size)
                 diagnostic.record({
                     "event": "epoch_totals", "epoch": epoch + 1,
+                    "training_samples": train_samples,
                     "online_train_loss": train_loss, "validation_loss": val_loss,
                     "online_train_confusion": epoch_confusion_matrix.cpu().tolist(),
                     "validation_confusion": confusion_matrix.cpu().tolist(),
@@ -590,6 +674,10 @@ class Value_network(nn.Module):
             # ======================================
 
             checkpoint = {
+                "training_samples": train_samples,
+                "training_mode": training_mode,
+                "samples_per_chunk": samples_per_chunk,
+                "max_pool_samples": max_pool_samples,
                 "train_files": sorted(train_files),
                 "val_files": val_files,
                 "split_seed": split_seed,
