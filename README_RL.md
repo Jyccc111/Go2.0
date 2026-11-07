@@ -15,18 +15,36 @@
 | `rl/game.py` | 原棋盘编码、合法动作、终局与奖励；调用原 `Game.cal_result()` |
 | `rl/policy.py` | 兼容旧检查点、带合法动作掩码的采样、原子保存 |
 | `rl/train.py` | 自博弈、REINFORCE 更新、历史对手池和命令行 |
-| `rl/hub.py` | Hugging Face 加载与上传、逐局盘面和结果文件 |
+| `rl/hub.py` | Hugging Face 上传、逐局盘面和结果文件 |
+| `rl/opponents.py` | 固定最新模型版本、发现与随机加载仓库历史对手 |
 | `tests/test_rl*.py` | 短小的 CPU 冒烟测试与模拟网络测试 |
 
-### 模型从哪里加载
+### 最新学习方与随机历史对手
 
-默认先检查模型仓库 `Jycccc111/Go_RL_policy`。仓库内已有可用检查点时使用它；
-仓库确实没有模型时，回退到 `Jycccc111/Go-Policy` 的 `best_policy_network_128.pth`。
-这里使用经核实的现有仓库与文件名：请求中写的 `Go_policy` 返回 404，
-而项目原 `AI.py` 使用的 `Go-Policy` 中存在 `best_policy_network_128.pth`。
-网络失败、权限失败或损坏的检查点会明确报错，不会当作“没有模型”悄悄换源。
-也可以通过 `--checkpoint /absolute/path/policy.pth` 指定本地模型。
+默认 `--opponent-mode history`：学习方从 `Jycccc111/Go_RL_policy` 当前主分支的最新
+`last.pth` 初始化；启动时固定该次提交 SHA，下载也使用这个 SHA，避免加载过程中仓库更新
+导致来源混杂。整次训练继续更新这一个学习方，不会每盘重新加载覆盖已学到的参数。
+如果可访问的 RL 仓库确实没有任何模型，沿用最初的回退规则，加载
+`Jycccc111/Go-Policy/best_policy_network_128.pth`。网络、权限或模型损坏不会当成“没有模型”。
 
+对手每盘从同一仓库的旧版本中均匀随机抽取：包括启动时仓库保留的旧检查点，以及之前
+Git 提交中的模型版本。按 LFS 内容哈希或 Git blob 标识去重，排除最新学习方本身；
+根目录 `last.pth` 与 `runs/.../last.pth` 的同一份备份不会被算成两个版本。
+候选名单在运行开始时固定，本次训练新生成的检查点在上传后供下一次运行使用。
+每盘只加载一个冻结对手，学习方交替执黑、执白，只对学习方的动作更新梯度。
+日志和逐局元数据记录双方仓库、提交 SHA、文件名与学习方颜色，便于复查抽到了哪个版本。
+
+如果还没有旧版本，程序会明确报错，绝不把最新模型的备份冒充历史对手。
+首次建立历史池可显式加 `--bootstrap-opponent`：把最初的监督模型
+`Go-Policy/best_policy_network_128.pth` 保存为 `Go_RL_policy` 内
+`bootstrap/<digest>/initial.pth`，作为初始历史对手；不会覆盖根目录的最新 `last.pth`。
+这个选项会写入模型仓库，需要写权限；已有历史候选时不再创建重复的初始版本。
+
+本次检查仓库时，只有一份实际模型：根目录和 `runs/.../last.pth` 内容相同，
+更早提交仅为空仓库，因此首次启用严格历史对手需要先建立初始历史版本。
+
+`--checkpoint /absolute/path/policy.pth` 是显式覆盖学习方来源；`--resume` 继续指定的本地
+RL 检查点。想始终从仓库最新模型开始时，不传这两个选项。
 加载保持 `Train_net.Policy_network` 原结构，按权重推断通道数和残差块数；
 接受原始 `state_dict`、含 `model_state_dict` 的检查点及带 `network.` 前缀的权重。
 使用严格加载和 `weights_only=True`，不修改输入模型文件。
@@ -46,20 +64,35 @@ python3 -m rl.train --help
 明确执行以下命令才开始训练。默认自动加载 Hub 模型、每局上传数据，结束后上传代码和模型：
 
 ```sh
-python3 -m rl.train --output runs/rl-001 --episodes 10
+python3 -m rl.train --output runs/rl-001 --episodes 1
 ```
 
+当前仓库历史池尚空，首次运行应明确选择建立初始历史版本：
+
+```sh
+python3 -m rl.train --output runs/rl-first-history --episodes 1 --bootstrap-opponent
+```
+
+如果不想写入初始历史版本，先自行向仓库加入旧模型；在此之前默认历史模式会报错。
+`--bootstrap-opponent` 与 `--no-upload` 不能同时使用。之后已有历史候选时通常不再需要该选项。
 `--output` 必须是新目录。CPU 为默认设备；可用时用 `--device mps`（Apple）
-或 `--device cuda`（NVIDIA）。`--no-upload` 保留所有本地输出并关闭本次上传。
-模型自动下载仍需要网络；完全离线时同时提供本地 `--checkpoint`。
+或 `--device cuda`（NVIDIA）。`--no-upload` 保留所有本地输出并关闭本次训练结果上传；
+默认历史模式仍需联网读取模型和历史。完全离线时使用本地 `--checkpoint`、
+`--opponent-mode self` 和 `--no-upload`。
+
+Colab 使用 GitHub 上更新后的源码；先更新干净的克隆再运行 Notebook。旧入口不支持这些新选项。
 
 常用参数：`--max-moves 800`、`--komi 7.5`、`--lr 0.00001`、
 `--temperature 1`、`--seed 0`。默认 `--episodes 1`，不会自动循环无限训练。
 
-历史对手池可用 `--pool-size 4 --snapshot-every 20` 开启。
-池从加载策略的冻结副本开始，每局均匀抽取一个对手，学习方黑白交替；
-只更新学习方。按间隔加入新冻结策略，容量满时移除最旧副本。
-不开池时同一策略执双方，双方按各自奖励更新，一盘结束前参数保持固定。
+默认无需传池参数，即为仓库历史对手模式。其他模式必须显式选择：
+
+- `--opponent-mode self`：同一学习策略执双方，双方按各自奖励更新。
+- `--opponent-mode pool --pool-size 4`：保留旧的本次运行内存池；从学习方冻结副本开始，
+  按 `--snapshot-every` 加入新副本并淘汰最旧副本。它与仓库历史池是不同的模式。
+
+所有模式均每隔 `--snapshot-every 20` 局保存本地策略快照。运行开始也保存
+`initial.pth`，正常结束后保留在仓库 `runs/<run_id>/initial.pth`，供将来的历史对手发现。
 
 恢复训练时指定 RL 检查点和新的输出目录，例如：
 
@@ -68,8 +101,8 @@ python3 -m rl.train --checkpoint runs/rl-001/last.pth --resume --output runs/rl-
 ```
 
 恢复模型、优化器、已完成局数和 CPU Torch 随机状态；恢复的优化器学习率优先于 `--lr`。
-其他运行参数按本次命令设置；历史池从恢复模型重新建立，不恢复 Python/GPU 随机状态，
-因此不是逐位重放。省略 `--resume` 时只用检查点初始化权重，优化器重新开始。
+其他运行参数按本次命令设置；默认历史模式重新发现并固定仓库候选，内存池模式从恢复模型重建。
+不恢复 Python/GPU 随机状态，因此不是逐位重放。省略 `--resume` 时只用检查点初始化权重，优化器重新开始。
 
 ### 终局、200 步规则和奖励
 
@@ -107,7 +140,7 @@ BatchNorm 在采样和更新时均保持 eval，梯度仍可传播。
 ```text
 <output>/games/episode-.../
   board.png       最终实际盘面及结果文字
-  result.json     结束原因、步数、颜色、胜负来源、是否跳过等
+  result.json     结束原因、步数、胜负来源、是否跳过、双方版本和学习方颜色等
   position.npz    终局编码、原盘面及可用的 value 标签
 ```
 
@@ -124,7 +157,7 @@ BatchNorm 在采样和更新时均保持 eval，梯度仍可传播。
 `runs/<run_id>/games/...`，避免不同运行互相覆盖。训练正常结束后，
 将最后检查点和明确列出的训练代码、原 `Game.py`、`Train_net.py`、指南及测试
 保存进 `Jycccc111/Go_RL_policy`；最新模型为仓库根目录 `last.pth`，
-另保留本次运行的版本。不会上传整个工作目录、`.env`、token 或无关文件。
+另保留本次运行的初始模型、最后模型及定期快照。不会上传整个工作目录、`.env`、token 或无关文件。
 
 训练开始前将本次使用的明确代码清单冻结到 `<output>/code/`；
 上传和重试均使用这一份代码，避免中途编辑项目后上传错版本。
@@ -152,18 +185,43 @@ board PNGs without a GUI.
 
 `rl/game.py` adapts the existing game and rewards; `rl/policy.py` handles compatible
 checkpoints, masked sampling and atomic saves; `rl/train.py` runs self-play and
-updates; `rl/hub.py` handles Hub access and per-game artifacts. `tests/test_rl*.py`
-contains short CPU and mocked-network tests.
+updates; `rl/hub.py` handles uploads and per-game artifacts; `rl/opponents.py`
+pins the current learner and discovers/downloads historical opponents.
+`tests/test_rl*.py` contains short CPU and mocked-network tests.
 
-### Model source and commands
+### Latest learner and random historical opponents
 
-By default, inspect `Jycccc111/Go_RL_policy` for a checkpoint. If it genuinely has
-no model, use `best_policy_network_128.pth` from `Jycccc111/Go-Policy`.
-These are the verified existing names: the requested `Go_policy` returned 404,
-while the repository used by the original `AI.py`, `Go-Policy`, contains that file.
-Network/authentication errors and invalid checkpoints fail visibly instead of
-silently triggering fallback. `--checkpoint /absolute/path/policy.pth` selects a
-local model instead.
+The default is `--opponent-mode history`. Initialize the learner from the latest
+root `last.pth` on `Jycccc111/Go_RL_policy`. Pin the starting commit SHA and use
+that revision when downloading. Continue updating this same learner throughout
+the run; do not reload and discard progress before each game. If the accessible
+RL repository genuinely contains no checkpoint, retain the original fallback to
+`Jycccc111/Go-Policy/best_policy_network_128.pth`. Network/authentication errors
+and invalid checkpoints fail visibly instead of silently selecting a fallback.
+
+For each game, uniformly sample one distinct earlier model from the repository:
+retained old checkpoints at the starting HEAD and models from previous commits.
+Deduplicate by LFS content hash or Git blob identity and exclude the current
+learner. A root checkpoint and its identical run backup are one version, not two.
+Freeze the candidate list at run start; newly produced snapshots become available
+to the next run after upload. Load one frozen opponent at a time, alternate learner
+color, and update learner actions only. Logs and game metadata identify learner
+and opponent repository, full revision, filename and learner color.
+
+If no old version exists, fail clearly rather than pretending that a backup of
+the latest model is historical. To initialize an empty history explicitly, add
+`--bootstrap-opponent`: archive the original supervised
+`Go-Policy/best_policy_network_128.pth` into the RL repository at
+`bootstrap/<digest>/initial.pth`. It is then an initial historical opponent;
+root `last.pth` is not replaced. This writes to the model repository and needs
+write access. Existing historical candidates avoid duplicate initialization.
+At inspection time the repository contained only one actual checkpoint, duplicated
+at root and a run path; the previous commit had no weights. The first strict
+historical run therefore needs an initial historical version.
+
+`--checkpoint /absolute/path/policy.pth` explicitly overrides the learner source;
+`--resume` continues that specified local RL checkpoint. Omit both to start from
+the repository's latest model.
 
 The loader preserves `Train_net.Policy_network`, infers channels/residual blocks
 from weights, and accepts raw state dictionaries, `model_state_dict` checkpoints
@@ -178,28 +236,45 @@ CLI arguments or saved configuration.
 cd /Users/jiangyuncong/Desktop/Go2.0
 python3 -m pip install -r requirements-rl.txt
 python3 -m unittest discover -s tests -v
-python3 -m rl.train --output runs/rl-001 --episodes 10
+python3 -m rl.train --output runs/rl-001 --episodes 1
 ```
 
-The training command downloads the selected model, uploads each game's data, and
-uploads code/model after successful completion. The output directory must be new.
-CPU is the default; use `--device mps` or `--device cuda` when available.
-`--no-upload` keeps local artifacts without uploading. Model auto-download still
-requires networking; combine a local `--checkpoint` with `--no-upload` for offline use.
+The training command downloads the latest model, samples historical opponents,
+uploads each game's data, and uploads code/model after successful completion.
+The current repository has no distinct old weights. To explicitly initialize history:
+
+```sh
+python3 -m rl.train --output runs/rl-first-history --episodes 1 --bootstrap-opponent
+```
+
+Alternatively, add an older checkpoint to the repository yourself; default historical
+mode fails until a previous version exists. `--bootstrap-opponent` cannot be combined
+with `--no-upload`. It is normally unnecessary once historical candidates exist.
+The output directory must be new. CPU is the default; use `--device mps` or
+`--device cuda` when available. `--no-upload` keeps training outputs local;
+default historical mode still needs networking. For completely offline use,
+combine a local `--checkpoint`, `--opponent-mode self` and `--no-upload`.
+
+In Colab, update the clean GitHub checkout before using these options; the old
+entry point does not contain the historical-opponent implementation.
 
 Defaults include `--episodes 1`, `--max-moves 800`, `--komi 7.5`, `--lr 0.00001`,
 `--temperature 1` and `--seed 0`. There is no endless training loop.
-Enable a historical pool with `--pool-size 4 --snapshot-every 20`: start with a
-frozen loaded policy, uniformly sample opponents, alternate learner color, and
-update learner moves only. Add frozen snapshots at the interval and evict the
-oldest when full. Without a pool, one policy plays both sides with per-color
-rewards; weights remain fixed throughout a rollout.
+No pool options are needed for default repository history. Other modes are
+explicit: `--opponent-mode self` plays both sides with the learning policy and
+per-color rewards. `--opponent-mode pool --pool-size 4` retains the earlier
+in-run memory pool: start with a frozen learner copy, add snapshots at the
+interval and evict the oldest when full. This differs from repository history.
+All modes save snapshots every `--snapshot-every 20` games. Preserve the starting
+checkpoint as local `initial.pth` and publish it at `runs/<run_id>/initial.pth`
+after successful completion, making initial versions discoverable in later runs.
 
 To resume, use `--checkpoint runs/rl-001/last.pth --resume` and a new output folder.
 This restores weights, optimizer, episode counter and CPU Torch RNG; the saved
 optimizer learning rate overrides `--lr`. Other options are supplied again.
-The pool restarts from resumed weights; Python/GPU RNG and old pool contents are
-not restored, so resume is not a bitwise replay. Without `--resume`, only weights
+Default historical mode rediscovers and pins the repository candidates; memory
+pool mode restarts from resumed weights. Python/GPU RNG and prior pool contents
+are not restored, so resume is not a bitwise replay. Without `--resume`, only weights
 are initialized from the checkpoint and the optimizer starts fresh.
 
 ### Termination and reward rules
@@ -243,7 +318,8 @@ memory, gradient norm is clipped to 1, and nonfinite values abort the update.
 Every game, including skipped ones, first writes a local folder under
 `<output>/games/episode-.../` containing `board.png`, `result.json` and
 `position.npz`. The PNG shows the actual terminal board and result text; JSON
-records termination, action count, winner/source, skip status and other metadata.
+records termination, action count, winner/source, skip status, learner/opponent
+versions and learner color.
 This stores one terminal position per game, not all intermediate positions.
 
 For known outcomes, NPZ `states` has shape `(1,8,19,19)` and `results` has shape
@@ -258,7 +334,8 @@ By default, upload all three files after every game to dataset
 `Jycccc111/Go_value_data` under `runs/<run_id>/games/...`. At successful training
 completion, upload the final model plus an explicit allowlist of training code,
 original `Game.py`/`Train_net.py`, guide and tests to `Jycccc111/Go_RL_policy`.
-The latest checkpoint is root `last.pth`, with a run-scoped version retained.
+The latest checkpoint is root `last.pth`; retain run-scoped initial weights,
+final weights and interval snapshots for future historical opponents.
 Never upload the whole workspace, `.env`, tokens or unrelated files.
 
 Before training, freeze the explicit source allowlist into `<output>/code/`.

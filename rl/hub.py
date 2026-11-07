@@ -17,7 +17,8 @@ DATA_REPO = 'Jycccc111/Go_value_data'
 SOURCE_FILES = (
     'Game.py', 'Train_net.py', 'Reinforcement_learning.py', 'README_RL.md',
     'requirements-rl.txt', 'rl/__init__.py', 'rl/game.py', 'rl/policy.py',
-    'rl/train.py', 'rl/hub.py', 'tests/test_rl.py', 'tests/test_rl_hub.py',
+    'rl/train.py', 'rl/hub.py', 'rl/opponents.py', 'tests/test_rl.py',
+    'tests/test_rl_hub.py', 'tests/test_rl_opponents.py',
 )
 
 
@@ -226,9 +227,41 @@ def upload_training(output,project_root,run_id,*,api=None,model_repo=MODEL_REPO)
             raise FileNotFoundError(source)
         operations.append(CommitOperationAdd(path_in_repo=relative,path_or_fileobj=str(source)))
         operations.append(CommitOperationAdd(path_in_repo=f'runs/{run_id}/source/{relative}',path_or_fileobj=str(source)))
+    initial = output/'initial.pth'
+    if initial.is_file():
+        operations.append(CommitOperationAdd(path_in_repo=f'runs/{run_id}/initial.pth',path_or_fileobj=str(initial)))
     for snapshot in sorted(output.glob('policy-*.pth')):
         operations.append(CommitOperationAdd(path_in_repo=f'runs/{run_id}/{snapshot.name}',path_or_fileobj=str(snapshot)))
     if (output/'run.json').is_file():
         operations.append(CommitOperationAdd(path_in_repo=f'runs/{run_id}/run.json',path_or_fileobj=str(output/'run.json')))
     return api.create_commit(repo_id=model_repo,repo_type='model',operations=operations,
                              commit_message=f'Save REINFORCE weights and code {run_id}')
+
+
+def bootstrap_opponent(learner_source, *, cache_dir=None, api=None):
+    """Explicit one-time baseline archive; never replaces the learner's last.pth."""
+    import hashlib
+    api = api or HfApi()
+    info = api.model_info(FALLBACK_REPO, files_metadata=True)
+    filename = 'best_policy_network_128.pth'
+    if filename not in {item.rfilename for item in info.siblings}:
+        raise FileNotFoundError(f'{FALLBACK_REPO}/{filename}')
+    path = hf_hub_download(repo_id=FALLBACK_REPO, filename=filename,
+                           revision=info.sha, repo_type='model', cache_dir=cache_dir)
+    with open(path, 'rb') as stream:
+        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    identity = f'sha256:{digest}'
+    if learner_source and learner_source.get('identity') == identity:
+        raise ValueError('Bootstrap model is identical to the learner; add a distinct older checkpoint first.')
+    from .policy import load_policy
+    validated, _ = load_policy(path, 'cpu')
+    del validated
+    target = f'bootstrap/{digest}/initial.pth'
+    provenance = json.dumps(dict(repo_id=FALLBACK_REPO, filename=filename,
+                                 revision=info.sha, sha256=digest), indent=2).encode()
+    commit = api.create_commit(repo_id=MODEL_REPO, repo_type='model', operations=[
+        CommitOperationAdd(path_in_repo=target, path_or_fileobj=path),
+        CommitOperationAdd(path_in_repo=f'bootstrap/{digest}/source.json', path_or_fileobj=provenance),
+    ], commit_message='Archive supervised initialization as first historical opponent')
+    return dict(kind='huggingface', repo_id=MODEL_REPO, filename=target,
+                revision=commit.oid, identity=identity)

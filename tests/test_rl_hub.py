@@ -1,4 +1,6 @@
 import json
+import hashlib
+from types import SimpleNamespace as NS
 from pathlib import Path
 import struct
 import tempfile
@@ -7,7 +9,7 @@ from unittest.mock import Mock, patch
 import zlib
 import numpy as np
 from rl.hub import (MODEL_REPO,FALLBACK_REPO,DATA_REPO,SOURCE_FILES,
-                    resolve_checkpoint,save_game,upload_game,snapshot_code,upload_training)
+                    resolve_checkpoint,save_game,upload_game,snapshot_code,upload_training,bootstrap_opponent)
 
 
 class HubSmokeTests(unittest.TestCase):
@@ -99,6 +101,40 @@ class HubSmokeTests(unittest.TestCase):
                 upload_game(path,'run-123',api=api)
             self.assertEqual(len(list(path.iterdir())),3)
 
+    def test_explicit_bootstrap_archives_baseline_without_replacing_latest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            initial=Path(directory)/'initial.pth'
+            initial.write_bytes(b'supervised baseline')
+            digest=hashlib.sha256(initial.read_bytes()).hexdigest()
+            api=Mock()
+            api.model_info.return_value=NS(sha='supervised-commit',siblings=[NS(rfilename='best_policy_network_128.pth')])
+            api.create_commit.return_value=NS(oid='bootstrap-commit')
+            with patch('rl.hub.hf_hub_download',return_value=str(initial)) as download, \
+                 patch('rl.policy.load_policy',return_value=(None,{})):
+                source=bootstrap_opponent(dict(identity='sha256:latest'),api=api)
+            self.assertEqual(download.call_args.kwargs['revision'],'supervised-commit')
+            self.assertEqual(source['revision'],'bootstrap-commit')
+            self.assertEqual(source['identity'],'sha256:'+digest)
+            paths={op.path_in_repo for op in api.create_commit.call_args.kwargs['operations']}
+            self.assertNotIn('last.pth',paths)
+            self.assertIn('bootstrap/'+digest+'/initial.pth',paths)
+            api.create_commit.reset_mock()
+            with patch('rl.hub.hf_hub_download',return_value=str(initial)), self.assertRaises(ValueError):
+                bootstrap_opponent(dict(identity='sha256:'+digest),api=api)
+            api.create_commit.assert_not_called()
+
+    def test_invalid_bootstrap_does_not_publish(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'broken.pth'
+            path.write_bytes(b'invalid weights')
+            api=Mock()
+            api.model_info.return_value=NS(sha='seed',siblings=[NS(rfilename='best_policy_network_128.pth')])
+            with patch('rl.hub.hf_hub_download',return_value=str(path)), \
+                 patch('rl.policy.load_policy',side_effect=ValueError('incompatible model')), \
+                 self.assertRaises(ValueError):
+                bootstrap_opponent(dict(identity='sha256:latest'),api=api)
+            api.create_commit.assert_not_called()
+
     def test_training_upload_uses_frozen_allowlist(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -112,6 +148,7 @@ class HubSmokeTests(unittest.TestCase):
             snapshot_code(output,project)
             (project/'Game.py').write_text('changed after training')
             (output/'last.pth').write_bytes(b'weights')
+            (output/'initial.pth').write_bytes(b'initial weights')
             (output/'policy-20.pth').write_bytes(b'snapshot')
             (output/'run.json').write_text('{}')
             api = Mock()
@@ -122,6 +159,7 @@ class HubSmokeTests(unittest.TestCase):
             self.assertEqual(kwargs['repo_type'],'model')
             self.assertIn('last.pth',paths)
             self.assertIn('runs/run-123/last.pth',paths)
+            self.assertIn('runs/run-123/initial.pth',paths)
             self.assertIn('runs/run-123/policy-20.pth',paths)
             self.assertIn('runs/run-123/run.json',paths)
             self.assertNotIn('.env',paths)

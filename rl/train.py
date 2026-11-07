@@ -2,6 +2,8 @@
 import argparse
 import copy
 import json
+import hashlib
+import shutil
 from datetime import datetime, timezone
 import uuid
 from pathlib import Path
@@ -9,7 +11,9 @@ import random
 import torch
 from .game import GoAdapter
 from .policy import distribution, load_policy, save_checkpoint
-from .hub import resolve_checkpoint, save_game, upload_game, upload_training, snapshot_code
+from .hub import resolve_checkpoint, save_game, upload_game, upload_training, snapshot_code, bootstrap_opponent
+
+from .opponents import discover_history, download_version, HistoricalOpponentPool, NoHistoricalOpponentError
 
 
 def rollout(model, env, opponent=None, learner_color=1, temperature=1.0):
@@ -68,7 +72,11 @@ def main(argv=None):
     parser.add_argument('--temperature', type=float, default=1.0)
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--pool-size', type=int, default=0)
+    parser.add_argument('--opponent-mode', choices=('history', 'self', 'pool'), default='history',
+                        help='default: random older HF policy; self: both sides; pool: in-run snapshots')
+    parser.add_argument('--bootstrap-opponent', action='store_true',
+                        help='if HF history is empty, explicitly archive the supervised baseline as first opponent')
+    parser.add_argument('--pool-size', type=int, default=0, help='only used with --opponent-mode pool')
     parser.add_argument('--snapshot-every', type=int, default=20)
     parser.add_argument('--resume', action='store_true', help='restore RL optimizer and episode counter')
     parser.add_argument('--no-upload', action='store_true', help='keep game records/model/code local only')
@@ -91,10 +99,30 @@ def main(argv=None):
             or not math.isfinite(args.temperature) or args.temperature <= 0
             or not math.isfinite(args.komi)):
         parser.error('invalid training configuration')
+    if args.bootstrap_opponent and (args.no_upload or args.opponent_mode != 'history'):
+        parser.error('--bootstrap-opponent requires history mode with uploads enabled')
+    if args.opponent_mode == 'pool' and args.pool_size < 1:
+        parser.error('pool mode requires --pool-size >= 1')
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     output.mkdir(parents=True, exist_ok=False)
-    path, source = resolve_checkpoint(args.checkpoint, cache_dir=output / 'hub-cache')
+    history = None
+    candidates = []
+    if args.opponent_mode == 'history':
+        latest, candidates = discover_history()
+        if args.checkpoint is not None or latest is None:
+            path, source = resolve_checkpoint(args.checkpoint, cache_dir=output / 'hub-cache')
+            with open(path, 'rb') as stream:
+                source['identity'] = 'sha256:' + hashlib.file_digest(stream, 'sha256').hexdigest()
+            candidates = [item for item in candidates if item['identity'] != source['identity']]
+        else:
+            source = latest
+            path = download_version(source, cache_dir=output / 'hub-cache')
+        if not candidates and args.bootstrap_opponent:
+            candidates = [bootstrap_opponent(source, cache_dir=output / 'hub-cache')]
+        history = HistoricalOpponentPool(candidates, cache_dir=output / 'hub-cache')
+    else:
+        path, source = resolve_checkpoint(args.checkpoint, cache_dir=output / 'hub-cache')
     print(f'Loading policy: {source}', flush=True)
     model, checkpoint = load_policy(path, args.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.0)
@@ -105,15 +133,26 @@ def main(argv=None):
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         initial = checkpoint['episode']
         torch.set_rng_state(checkpoint['torch_rng_state'].cpu())
+    shutil.copy2(path, output / 'initial.pth')
     run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:12]
     snapshot_code(output, project)
-    run = dict(run_id=run_id, source=source, source_code='code', config=vars(args))
+    run = dict(run_id=run_id, source=source, source_code='code', config=vars(args),
+               historical_opponents=candidates)
     (output / 'run.json').write_text(json.dumps(run, ensure_ascii=False, indent=2) + '\n')
-    pool = [copy.deepcopy(model).eval()] if args.pool_size else []
+    pool = [copy.deepcopy(model).eval().requires_grad_(False)] if args.opponent_mode == 'pool' else []
+    opponent = None
     for episode in range(initial+1, initial+args.episodes+1):
         env = GoAdapter(args.komi, args.max_moves)
-        opponent = random.choice(pool) if pool else None
-        records = rollout(model, env, opponent, 1 if episode % 2 else -1, args.temperature)
+        opponent = None  # Release the previous GPU opponent before loading another.
+        opponent_source = None
+        if history is not None:
+            opponent, opponent_source = history.sample(device=args.device)
+        elif pool:
+            opponent = random.choice(pool)
+            opponent_source = dict(kind='in_run_pool')
+        learner_color = 1 if episode % 2 else -1
+        print(f'episode={episode} learner_color={learner_color} opponent={opponent_source}', flush=True)
+        records = rollout(model, env, opponent, learner_color, args.temperature)
         # Archive every terminal board before updating or attempting remote writes.
         # A scoring error still leaves the raw board and an explicit unknown label.
         try:
@@ -122,18 +161,21 @@ def main(argv=None):
             save_game(output, episode, env.game.board.board, env.observe(), dict(
                 episode=episode, moves=env.moves, winner=None, value_label=None,
                 result='SCORING ERROR', result_source=None, skip_reason='scoring_error',
-                error_type=type(exc).__name__, history=env.history))
+                error_type=type(exc).__name__, history=env.history,
+                learner_source=source, opponent_source=opponent_source, learner_color=learner_color))
             save_checkpoint(output / 'last.pth', model, optimizer, episode-1, vars(args))
             raise
-        metadata.update(episode=episode, run_id=run_id)
+        metadata.update(episode=episode, run_id=run_id, learner_source=source,
+                        opponent_source=opponent_source, learner_color=learner_color)
         game_dir = save_game(output, episode, env.game.board.board, env.observe(), metadata)
         loss = None if env.skip_reason else reinforce_update(model, optimizer, records, env.rewards(), args.temperature)
         print(f'episode={episode} moves={env.moves} result={metadata["result"]} '
               f'skipped={env.skip_reason} loss={loss}', flush=True)
         save_checkpoint(output / 'last.pth', model, optimizer, episode, vars(args))
-        if pool and episode % args.snapshot_every == 0:
-            pool.append(copy.deepcopy(model).eval())
-            pool = pool[-args.pool_size:]
+        if episode % args.snapshot_every == 0:
+            if pool:
+                pool.append(copy.deepcopy(model).eval().requires_grad_(False))
+                pool = pool[-args.pool_size:]
             save_checkpoint(output / f'policy-{episode}.pth', model, optimizer, episode, vars(args))
         if not args.no_upload:
             upload_game(game_dir, run_id)

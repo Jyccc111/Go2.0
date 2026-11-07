@@ -146,10 +146,10 @@ class SmokeTests(unittest.TestCase):
             source_bytes = source.read_bytes()
             from rl.train import main
             with patch('Game.Game.cal_result', side_effect=AssertionError('short game scored')):
-                main(['--checkpoint', str(source), '--output', str(root/'first'),
+                main(['--opponent-mode', 'self', '--checkpoint', str(source), '--output', str(root/'first'),
                   '--episodes', '1', '--max-moves', '2', '--no-upload', '--pool-size', '1',
                   '--snapshot-every', '1'])
-            main(['--checkpoint', str(root/'first'/'last.pth'), '--resume',
+            main(['--opponent-mode', 'self', '--checkpoint', str(root/'first'/'last.pth'), '--resume',
                   '--output', str(root/'second'), '--episodes', '1', '--max-moves', '2', '--no-upload'])
             _, checkpoint = load_policy(root/'second'/'last.pth')
             self.assertEqual(checkpoint['episode'], 2)
@@ -178,7 +178,7 @@ class SmokeTests(unittest.TestCase):
                  patch('rl.train.rollout', side_effect=short_resign), \
                  patch('rl.train.upload_game') as upload, \
                  patch('rl.train.upload_training') as final_upload:
-                main(['--output',str(root/'run'),'--episodes','2'])
+                main(['--opponent-mode', 'self', '--output',str(root/'run'),'--episodes','2'])
                 self.assertIsNone(load.call_args.args[0])
                 self.assertEqual(upload.call_count,2)
                 final_upload.assert_called_once()
@@ -192,10 +192,50 @@ class SmokeTests(unittest.TestCase):
                 upload.reset_mock()
                 final_upload.reset_mock()
                 load.reset_mock()
-                main(['--output',str(root/'run'),'--upload-only'])
+                main(['--opponent-mode', 'self', '--output',str(root/'run'),'--upload-only'])
                 load.assert_not_called()
                 self.assertEqual(upload.call_count,2)
                 final_upload.assert_called_once()
+
+    def test_default_history_uses_latest_and_alternates_learner(self):
+        from rl.train import main
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root/'latest.pth'
+            torch.save(Policy_network(size=2,num_blocks=0).state_dict(), checkpoint)
+            latest = dict(repo_id='owner/rl', filename='last.pth', revision='new', identity='sha256:new')
+            old = dict(repo_id='owner/rl', filename='last.pth', revision='old', identity='sha256:old')
+            opponent = Policy_network(size=2,num_blocks=0).eval().requires_grad_(False)
+            before = copy.deepcopy(opponent.state_dict())
+            seen = []
+            def short_game(model, env, actual_opponent, learner_color, temperature):
+                self.assertIs(actual_opponent,opponent)
+                seen.append(learner_color)
+                # End on the learner's turn with a resignation.
+                from Game import Player
+                env.game.current_player = Player(learner_color)
+                env._refresh()
+                state,mask = env.observe(),env.legal_mask()
+                env.step(RESIGN)
+                return [(state,mask,RESIGN,learner_color)]
+            with patch('rl.train.discover_history',return_value=(latest,[old])) as discover, \
+                 patch('rl.train.download_version',return_value=str(checkpoint)) as download, \
+                 patch('rl.train.HistoricalOpponentPool') as pool, \
+                 patch('rl.train.rollout',side_effect=short_game):
+                pool.return_value.sample.return_value=(opponent,old)
+                main(['--output',str(root/'run'),'--episodes','2','--no-upload'])
+                discover.assert_called_once()
+                download.assert_called_once()
+                self.assertEqual(download.call_args.args[0],latest)
+                self.assertEqual(pool.return_value.sample.call_count,2)
+            self.assertEqual(seen,[1,-1])
+            for key,value in opponent.state_dict().items():
+                self.assertTrue(torch.equal(value,before[key]))
+            for file in (root/'run'/'games').glob('*/result.json'):
+                metadata=json.loads(file.read_text())
+                self.assertEqual(metadata['learner_source'],latest)
+                self.assertEqual(metadata['opponent_source'],old)
+            self.assertTrue((root/'run'/'initial.pth').is_file())
 
     def test_masks_and_gradient_sign(self):
         mask = np.zeros(363, bool)
