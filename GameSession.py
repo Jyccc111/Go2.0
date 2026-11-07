@@ -1,6 +1,7 @@
 """Manage a Go game and the players assigned to each color."""
 
 from enum import IntEnum
+from math import isfinite
 
 from Game import Game, Player
 
@@ -27,7 +28,7 @@ class GameSession:
         self.pass_count = 0
         self.game_over = False
         self.result = None
-
+    
     def initialize(self, player_black=Type_player.HUMAN,
                    player_white=Type_player.HUMAN, komi=0):
         try:
@@ -39,6 +40,9 @@ class GameSession:
             komi_value = float(komi)
         except (TypeError, ValueError) as exc:
             raise ValueError("komi must be numeric") from exc
+
+        if not isfinite(komi_value):
+            raise ValueError("komi must be finite")
 
         self.game = self._game_factory()
         self.player_black = black_type
@@ -178,8 +182,7 @@ class GameSession:
                 if kind == "pass":
                     return self.pass_turn(color)
                 if kind == "resign":
-                    # Ignore automatic resignation actions during AI play.
-                    return self.pass_turn(color)
+                    return self.resign(color)
                 if kind != "move":
                     return {"success": False, "error": "AI returned an invalid action."}
                 row, col = action.get("row"), action.get("col")
@@ -188,10 +191,10 @@ class GameSession:
                 # coordinates and reserve (0, 0) / (-1, -1) for pass/resign.
                 move = ai.predict_move(self.game)
                 if move is None:
-                    return self.pass_turn(color)
+                    return self.resign(color)
                 row, col = move
                 if (row, col) == (-1, -1):
-                    return self.pass_turn(color)
+                    return self.resign(color)
                 if (row, col) == (0, 0):
                     return self.pass_turn(color)
         except Exception as exc:

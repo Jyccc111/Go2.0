@@ -1,3 +1,6 @@
+from copy import deepcopy
+from functools import wraps
+from math import isfinite
 from flask import Flask, jsonify, render_template, request
 from threading import Lock
 from Game import Game, Player
@@ -10,6 +13,15 @@ sgf_replay = None
 recommendation_ai = None
 value_predictor = None
 value_predictor_lock = Lock()
+session_lock = Lock()
+
+
+def lock_session(view):
+    @wraps(view)
+    def locked_view(*args, **kwargs):
+        with session_lock:
+            return view(*args, **kwargs)
+    return locked_view
 
 
 def get_recommendation_ai(color):
@@ -105,7 +117,45 @@ def get_state():
     return jsonify(game_session.get_state())
 
 
+@app.route("/score", methods=["GET"])
+@app.route("/sgf/score", methods=["GET"], defaults={"replay": True})
+def score(replay=False):
+    try:
+        with session_lock:
+            if replay:
+                if sgf_replay is None:
+                    return jsonify(success=False, error="请先载入 SGF 文件。"), 400
+                scoring_game = deepcopy(sgf_replay["game"])
+                if scoring_game.komi is None:
+                    return jsonify(success=False, error="棋谱的贴目格式有误，无法点目。"), 400
+                played = sgf_replay["index"] - int(sgf_replay["failed"])
+                if played:
+                    scoring_game.current_player = Player(-sgf_replay["moves"][played - 1]["color"])
+            else:
+                scoring_game = deepcopy(game_session.game)
+                scoring_game.komi = game_session.komi
+        black_score, white_area, _ = scoring_game.cal_result()
+        white_score = white_area + scoring_game.komi
+        lead = black_score - white_score
+        winner = "black" if lead > 0 else "white" if lead < 0 else "draw"
+        return jsonify(
+            success=True,
+            black_score=black_score,
+            white_area=white_area,
+            territory=scoring_game.eye_board.tolist(),
+            scored_board=scoring_game.board.board.tolist(),
+            white_score=white_score,
+            komi=scoring_game.komi,
+            winner=winner,
+            margin=abs(lead),
+        )
+    except Exception:
+        app.logger.exception("Could not score the current game")
+        return jsonify(success=False, error="暂时无法计算当前盘面的目数。"), 500
+
+
 @app.route("/session/init", methods=["POST"])
+@lock_session
 def initialize_session():
     global game
     data = request.get_json(silent=True) or {}
@@ -129,6 +179,7 @@ def initialize_session():
             response["ai_error"] = ai_outcome.get("error")
     return jsonify(response)
 @app.route("/play", methods=["POST"])
+@lock_session
 def play():
     data = request.get_json(silent=True) or {}
     try:
@@ -158,6 +209,7 @@ def play():
 
 
 @app.route("/pass", methods=["POST"])
+@lock_session
 def pass_turn():
     data = request.get_json(silent=True) or {}
     try:
@@ -178,6 +230,7 @@ def pass_turn():
 
 
 @app.route("/ai_move", methods=["POST"])
+@lock_session
 def ai_move():
     outcome = game_session.play_ai()
     status = 200 if outcome.get("success") else 400
@@ -282,6 +335,7 @@ def sgf_winrate_curve():
 
 
 @app.route("/sgf/load", methods=["POST"])
+@lock_session
 def load_sgf():
     global sgf_replay
 
@@ -333,10 +387,17 @@ def load_sgf():
     except Exception as exc:
         return jsonify({"ok": False, "error": f"读取 SGF 失败: {exc}"}), 400
 
+    replay_game = Game()
+    try:
+        komi = parsed.get_komi()
+        replay_game.komi = komi if isfinite(komi) else None
+    except ValueError:
+        replay_game.komi = None
+
     sgf_replay = {
         "filename": uploaded.filename,
         "result": result,
-        "game": Game(),
+        "game": replay_game,
         "moves": moves,
         "index": 0,
         "failed": False,
@@ -347,6 +408,7 @@ def load_sgf():
 
 
 @app.route("/sgf/step", methods=["POST"])
+@lock_session
 def step_sgf():
     if sgf_replay is None:
         return jsonify({"ok": False, "error": "请先载入 SGF 文件。"}), 400

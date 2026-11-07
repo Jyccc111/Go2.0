@@ -1,3 +1,5 @@
+from operator import index
+
 import numpy as np
 from enum import IntEnum
 
@@ -31,9 +33,11 @@ class Board:
     def set(self, rol, col, color):
         if color == 1:
             self.board[rol, col] = 1
-        else:
+        elif color == -1:
             self.board[rol, col] = -1
-
+        else:
+            self.board[rol, col] = 0
+        
     def get(self, rol, col):
         return self.board[rol, col]
 
@@ -64,6 +68,7 @@ class Board:
         else:
             result_list.append((0))
         return result_list
+        
 
     def eat(self, rol, col):
         self.board[rol, col] = 0
@@ -109,6 +114,7 @@ class air:
 class Game: 
 
     def __init__(self):
+        self.komi = 0
         self.board = Board()
         self.current_player = Player.BLACK
         self.trun = 1
@@ -125,7 +131,59 @@ class Game:
         self.num_turns = 0
         self.turn_since = np.zeros((19, 19), dtype = np.int16)
         self.count = 0
+        self.air_color = np.zeros((19, 19), dtype = np.int8)
+        self.air_color_checked = np.zeros((19, 19), dtype = np.int8)
+        self.num_eyes = np.zeros((19, 19), dtype = np.int8)
+        self.num_eyes_checked = np.zeros((19, 19), dtype = np.int8)
+        self.cluster_indexing = np.zeros((19, 19), dtype = np.int8)
+        self.relation_mat = None
+        self.relation_mat_clusters = None
+        self.eye_board = np.zeros((19, 19), dtype = np.int8)
 
+        self.black_eye_clusters = []
+        self.white_eye_clusters = []
+        self.undefined_eye_clusters = []
+        self.black_clusters = []
+        self.white_clusters = []
+        self.air_clusters = []
+        self.all_clusters = []
+        self.black_num_eyes =[]
+        self.white_num_eyes = []
+        self.black_alive_indexes = []
+        self.white_alive_indexes = []
+
+    def set_komi(self, komi):
+        self.komi = komi
+
+    def reset(self):
+        self.board.reset()
+        self.current_player = Player.BLACK
+        self.num_turns = 0
+        self.turn_since = np.zeros((19, 19), dtype = np.int16)
+        self.count = 0
+        self.islegal = np.ones((19, 19), dtype = np.int8)
+        self.lasteated = np.zeros((19, 19), dtype = np.int8)
+        self.num_eat = np.zeros((2,19, 19), dtype = np.int8)
+        self.eaten_checked = np.zeros((19, 19), dtype = np.int8)
+        self.air_color = np.zeros((19, 19), dtype = np.int8)
+        self.air_color_checked = np.zeros((19, 19), dtype = np.int8)
+        self.num_eyes = np.zeros((19, 19), dtype = np.int8)
+        self.num_eyes_checked = np.zeros((19, 19), dtype = np.int8)
+        self.cluster_indexing = np.zeros((19, 19), dtype = np.int8)
+        self.relation_mat = None
+        self.relation_mat_clusters = None
+        self.eye_board = np.zeros((19, 19), dtype = np.int8)
+        self.black_eye_clusters = []
+        self.white_eye_clusters = []
+        self.undefined_eye_clusters = []
+        self.black_clusters = []
+        self.white_clusters = []
+        self.air_clusters = []
+        self.all_clusters = []
+        self.black_num_eyes =[]
+        self.white_num_eyes = []
+        self.black_alive_indexes = []
+        self.white_alive_indexes = []
     def mask(self,val, color):
         if color == 1:
             return val
@@ -475,3 +533,285 @@ class Game:
             self.current_player = Player.BLACK
         self.lasteated = np.zeros((19, 19), dtype = np.int8)
         self.update_legal_position()
+
+    def cal_result(self):
+        black_win = True
+        while True:
+            self.create_clusters()
+            self.construct_relation_mat()
+            all_classified = self.cal_alive()
+            if all_classified:
+                break
+            self.eliminate_dead_clusters()
+        black_score = 0
+        white_score = 0
+        num_undefined = 0
+        for i in range(19):
+            for j in range(19):
+                if self.board.get(i,j) == 1:
+                    black_score += 1
+                elif self.board.get(i,j) == -1:
+                    white_score += 1
+                else:
+                    if self.eye_board[i, j] == 1:
+                        black_score += 1
+                    elif self.eye_board[i, j] == -1:
+                        white_score += 1
+                    else:
+                        num_undefined += 1
+        if num_undefined % 2 == 1:
+            if self.current_player == Player.WHITE:
+                black_score += 1
+            else:
+                white_score += 1
+        black_score += num_undefined // 2
+        white_score += num_undefined // 2
+        white_result = white_score + self.komi
+        if white_result > black_score:
+            black_win = False
+        return black_score, white_score, black_win 
+
+
+
+    def create_clusters(self):
+        self.black_clusters = []
+        self.white_clusters = []
+        self.air_clusters = []
+        self.is_checked = np.zeros((19, 19), dtype = np.int8)
+        for i in range(19):
+            for j in range(19):
+                if self.board.get(i,j) == 1 and self.is_checked[i, j] == 0:
+                    self.update_clusters(i, j, 1)
+                elif self.board.get(i,j) == -1 and self.is_checked[i, j] == 0:
+                    self.update_clusters(i, j, -1)
+                elif self.board.get(i,j) == 0 and self.is_checked[i, j] == 0:
+                    self.update_clusters(i, j, 0)
+        self.is_checked = np.zeros((19, 19), dtype = np.int8)
+    def update_clusters(self, row, col, color, is_root = True):
+
+        if color == 1:
+            if is_root:
+                self.black_clusters.append([])
+                self.black_clusters[-1].append([row, col])
+            else:
+                self.black_clusters[-1].append([row, col])
+        elif color == -1:
+            if is_root:
+                self.white_clusters.append([])
+                self.white_clusters[-1].append([row, col])
+            else:
+                self.white_clusters[-1].append([row, col])
+        elif color == 0:
+            if is_root:
+                self.air_clusters.append([])
+                self.air_clusters[-1].append([row, col])
+            else:
+                self.air_clusters[-1].append([row, col])
+        self.is_checked[row, col] = 1
+        if is_legal(row + 1, col) and self.board.get(row + 1, col) == color and self.is_checked[row + 1, col] == 0:
+                    self.update_clusters(row + 1, col, color, is_root=False)
+        if is_legal(row - 1, col) and self.board.get(row - 1, col) == color and self.is_checked[row - 1, col] == 0:
+                    self.update_clusters(row - 1, col, color, is_root=False)
+        if is_legal(row, col + 1) and self.board.get(row, col + 1) == color and self.is_checked[row, col + 1] == 0:
+                    self.update_clusters(row, col + 1, color, is_root=False)
+        if is_legal(row, col - 1) and self.board.get(row, col - 1) == color and self.is_checked[row, col - 1] == 0:
+                    self.update_clusters(row, col - 1, color, is_root=False)
+        
+
+    def construct_relation_mat(self):
+        self.black_eye_clusters = []
+        self.white_eye_clusters = []
+        self.undefined_eye_clusters = []
+        self.all_clusters = self.black_clusters.copy()
+        self.all_clusters.extend(self.white_clusters)
+        self.relation_mat_clusters = np.zeros((len(self.all_clusters), len(self.all_clusters)), dtype = np.int8)
+        
+        for i in range(len(self.all_clusters)):
+            for j in range(len(self.all_clusters[i])):
+                self.cluster_indexing[self.all_clusters[i][j][0], self.all_clusters[i][j][1]] = i
+        for i in range(len(self.air_clusters)):
+            for j in range(len(self.air_clusters[i])):
+                self.cluster_indexing[self.air_clusters[i][j][0], self.air_clusters[i][j][1]] = i
+        self.relation_mat = np.zeros((len(self.all_clusters), len(self.air_clusters)), dtype = np.int8)
+        for row in range(19):
+            for col in range(19):
+                if self.board.get(row, col) != 0:
+                    if is_legal(row, col + 1) and self.board.get(row, col + 1) == 0:
+                        self.relation_mat[self.cluster_indexing[row, col], self.cluster_indexing[row, col + 1]] = 1
+                    elif is_legal(row, col + 1) and self.board.get(row, col + 1) != self.board.get(row, col):
+                        self.relation_mat_clusters[self.cluster_indexing[row, col], self.cluster_indexing[row, col + 1]] = 1
+                    if is_legal(row, col - 1) and self.board.get(row, col - 1) == 0:
+                        self.relation_mat[self.cluster_indexing[row, col], self.cluster_indexing[row, col - 1]] = 1
+                    elif is_legal(row, col - 1) and self.board.get(row, col - 1) != self.board.get(row, col):
+                        self.relation_mat_clusters[self.cluster_indexing[row, col], self.cluster_indexing[row, col - 1]] = 1
+                    if is_legal(row + 1, col) and self.board.get(row + 1, col) == 0:
+                        self.relation_mat[self.cluster_indexing[row, col], self.cluster_indexing[row + 1, col]] = 1
+                    elif is_legal(row + 1, col) and self.board.get(row + 1, col) != self.board.get(row, col):
+                        self.relation_mat_clusters[self.cluster_indexing[row, col], self.cluster_indexing[row + 1, col]] = 1
+                    if is_legal(row - 1, col) and self.board.get(row - 1, col) == 0:
+                        self.relation_mat[self.cluster_indexing[row, col], self.cluster_indexing[row - 1, col]] = 1
+                    elif is_legal(row - 1, col) and self.board.get(row - 1, col) != self.board.get(row, col):
+                        self.relation_mat_clusters[self.cluster_indexing[row, col], self.cluster_indexing[row - 1, col]] = 1
+        black_mat = self.relation_mat[:len(self.black_clusters), :]
+        white_mat = self.relation_mat[len(self.black_clusters):, :]
+        self.black_num_eyes = np.zeros(len(self.black_clusters))
+        self.white_num_eyes = np.zeros(len(self.white_clusters))
+        for i in range(len(self.air_clusters)):
+            adj_black = False
+            adj_white = False
+            eye_type = 0
+            if not np.all(black_mat[:, i] == 0):
+                adj_black = True
+            if not np.all(white_mat[:, i] == 0):
+                adj_white = True
+            if adj_black and adj_white:
+                self.undefined_eye_clusters.append(self.air_clusters[i])
+                for j in range(len(self.air_clusters[i])):
+                    self.eye_board[self.air_clusters[i][j][0], self.air_clusters[i][j][1]] = 0
+            elif adj_black:
+                for j in range(len(self.black_clusters)):
+                    if self.relation_mat[j, i] == 1:
+                        self.black_num_eyes[j] += self.eye_classifier(self.air_clusters[i])
+                self.black_eye_clusters.append(self.air_clusters[i])
+                for j in range(len(self.air_clusters[i])):
+                    self.eye_board[self.air_clusters[i][j][0], self.air_clusters[i][j][1]] = 1
+            elif adj_white:
+                for j in range(len(self.white_clusters)):
+                    if self.relation_mat[j+len(self.black_clusters), i] == 1:
+                        self.white_num_eyes[j] += self.eye_classifier(self.air_clusters[i])
+                self.white_eye_clusters.append(self.air_clusters[i])
+                for j in range(len(self.air_clusters[i])):
+                    self.eye_board[self.air_clusters[i][j][0], self.air_clusters[i][j][1]] = -1
+
+    def eye_classifier(self, cluster):
+        if len(cluster) <= 3:
+            return 1
+        if len(cluster) > 6:
+            return 2 
+        degree_list = np.zeros(len(cluster))
+        for i in range(len(cluster)):
+            for j in range(i + 1, len(cluster)):
+                if (abs(cluster[i][0] - cluster[j][0]) + abs(cluster[i][1] - cluster[j][1]))== 1:
+                    degree_list[i] += 1
+                    degree_list[j] += 1
+
+        k = len(cluster) - degree_list.max()
+        c = 0 
+        for i in range(len(degree_list)):
+            if degree_list[i] > 1:
+                c += 1
+
+        if k <= 1 or (k <= 2 and c >= 4):
+            return 1
+        return 2
+
+    def cal_alive(self):
+        self.black_alive_indexes = np.zeros(len(self.black_clusters), dtype = np.int8)
+        self.white_alive_indexes = np.zeros(len(self.white_clusters), dtype = np.int8)
+        for i in range(len(self.black_clusters)):
+            if self.black_num_eyes[i] >= 2:
+                self.black_alive_indexes[i] = 1
+        for i in range(len(self.white_clusters)):
+            if self.white_num_eyes[i] >= 2:
+                self.white_alive_indexes[i] = 1
+        relation_mat = np.dot(self.relation_mat,self.relation_mat.T)
+        black_mat = relation_mat[:len(self.black_clusters), :len(self.black_clusters)]
+        white_mat = relation_mat[len(self.black_clusters):, len(self.black_clusters):]
+        self.black_alive_indexes = np.dot(black_mat, self.black_alive_indexes)
+        self.white_alive_indexes = np.dot(white_mat, self.white_alive_indexes)
+        all_clear = True
+        for i in range(len(self.black_alive_indexes)):
+            if self.black_alive_indexes[i] > 0:
+                self.black_alive_indexes[i] = 1
+            else:
+                all_clear = False
+        for i in range(len(self.white_alive_indexes)):
+            if self.white_alive_indexes[i] > 0:
+                self.white_alive_indexes[i] = 1
+            else:
+                all_clear = False
+        return all_clear
+
+    def eliminate_dead_clusters(self):
+        next_player = -self.current_player.value
+        black_min_index = 0
+        black_min_value = np.inf
+        black_min_eyes = 1
+        white_min_index = 0
+        white_min_value = np.inf
+        white_min_eyes = 1
+        exist_dead_black = False
+        exist_dead_white = False
+        for i in range(len(self.black_alive_indexes)):
+            if self.black_alive_indexes[i] == 0:
+                exist_dead_black = True
+                if self.black_num_eyes[i] < black_min_eyes:
+                    row, col = self.black_clusters[i][0]
+                    black_min_value = self.cluster_air[row, col]
+                    black_min_index = i
+                    black_min_eyes = self.black_num_eyes[i]
+                elif self.black_num_eyes[i] == black_min_eyes:
+                    row, col = self.black_clusters[i][0]
+                    if black_min_value > self.cluster_air[row, col]:
+                        black_min_value = self.cluster_air[row, col]
+                        black_min_index = i
+                        black_min_eyes = self.black_num_eyes[i]
+        
+        for i in range(len(self.white_alive_indexes)):
+            if self.white_alive_indexes[i] == 0:
+                exist_dead_white = True
+                if self.white_num_eyes[i] < white_min_eyes:
+                    row, col = self.white_clusters[i][0]
+                    white_min_value = self.cluster_air[row, col]
+                    white_min_index = i
+                    white_min_eyes = self.white_num_eyes[i]
+                elif self.white_num_eyes[i] == white_min_eyes:
+                    row, col = self.white_clusters[i][0]
+                    if white_min_value > self.cluster_air[row, col]:
+                        white_min_value = self.cluster_air[row, col]
+                        white_min_index = i
+                        white_min_eyes = self.white_num_eyes[i]
+        if not exist_dead_black:
+            self.eliminate_cluster(white_min_index, -1)
+        elif not exist_dead_white:
+            self.eliminate_cluster(black_min_index, 1)
+        else:
+            if white_min_eyes < black_min_eyes:
+                self.eliminate_cluster(white_min_index, -1)
+            elif black_min_eyes < white_min_eyes:
+                self.eliminate_cluster(black_min_index, 1)
+            else:
+                if white_min_value < black_min_value:
+                    self.eliminate_cluster(white_min_index, -1)
+                elif black_min_value < white_min_value:
+                    self.eliminate_cluster(black_min_index, 1)
+                else:
+                    if self.current_player.value == 1:
+                        self.eliminate_cluster(white_min_index, -1)
+                    else:
+                        self.eliminate_cluster(black_min_index, 1)
+
+    def eliminate_cluster(self, index, color):
+        if color == 1:
+            cluster = self.black_clusters[index]
+        else:
+            cluster = self.white_clusters[index]
+        for row, col in cluster:
+            self.board.set(row, col, 0)
+        self.calculate_new_air(cluster)
+
+        
+
+    def calculate_new_air(self,cluster):
+        for i in range(len(cluster)):
+            row, col = [cluster[i][0], cluster[i][1]]
+            self.is_checked = np.zeros((19, 19), dtype = np.int8)
+            if is_legal(row+1, col) and self.board.get(row+1, col) != 0:
+                self.update_cluster_air(row+1, col, 1, self.board.get(row+1, col))
+            if is_legal(row-1, col) and self.board.get(row-1, col) != 0:
+                self.update_cluster_air(row-1, col, 1, self.board.get(row-1, col))
+            if is_legal(row, col+1) and self.board.get(row, col+1) != 0:
+                self.update_cluster_air(row, col+1, 1, self.board.get(row, col+1))
+            if is_legal(row, col-1) and self.board.get(row, col-1) != 0:
+                self.update_cluster_air(row, col-1, 1, self.board.get(row, col-1))
+            self.is_checked = np.zeros((19, 19), dtype = np.int8)

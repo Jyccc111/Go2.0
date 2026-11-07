@@ -166,12 +166,9 @@ class Policy_network(nn.Module):
         # ==========================================
         # 划分 Train / Validation
         # ==========================================
-
         files = files.copy()
         random.shuffle(files)
-
         split = int(len(files) * (1 - val_ratio))
-
         train_files = files[:split]
         val_files = files[split:]
 

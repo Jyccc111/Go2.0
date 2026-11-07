@@ -1,6 +1,5 @@
 import gc
 import os
-from value_diagnostics import ValueDiagnostics
 from huggingface_hub import HfApi
 import torch
 from torch import nn
@@ -68,15 +67,6 @@ def build_mixed_pool(files, samples_per_chunk, max_pool_samples, seed, diagnosti
             raise ValueError(f"Non-finite input in sampled pool from {filename}")
         state_parts.append(sampled_states)
         label_parts.append(sampled_labels)
-        if diagnostic is not None:
-            diagnostic.record({
-                "event": "pool_selection", "file": filename,
-                "source_samples": len(labels), "pool_samples": count,
-                "source_black": int(np.count_nonzero(labels == 1)),
-                "source_indices": indices.tolist(),
-            })
-            # The training probe must contain positions actually used for updates.
-            diagnostic.capture("train", filename, sampled_states, sampled_labels)
         del states, labels
     dataset = GoDataset(np.concatenate(state_parts), np.concatenate(label_parts))
     print(f"Mixed pool: {len(dataset):,} positions from {len(files)} training chunks")
@@ -229,7 +219,7 @@ class Value_network(nn.Module):
             model_repo_id,
             val_ratio=0.2,
             batch_size=512,
-            diagnostics=True,
+            diagnostics=False,
             diagnostic_chunks=3,
             diagnostic_samples=1024,
             diagnostic_report="value_diagnostics.jsonl",
@@ -238,7 +228,7 @@ class Value_network(nn.Module):
             training_mode="chunk",
             samples_per_chunk=4096,
             max_pool_samples=65536,
-            trace_chunk_probes=True
+            trace_chunk_probes=False
         ):
         """Train on every training position once per epoch by default.
 
@@ -247,6 +237,8 @@ class Value_network(nn.Module):
         positions within each chunk are shuffled on every epoch.
         Validation uses all supplied validation positions.
         Explicit training_mode='mixed' enables the optional bounded sample pool.
+        Legacy diagnostic arguments are accepted for caller compatibility only;
+        training no longer generates diagnostic reports or runs probe evaluations.
         """
 
         api = HfApi() if upload_models else None
@@ -284,25 +276,11 @@ class Value_network(nn.Module):
         )
 
         print(f"Split seed: {split_seed}")
-        print("Train files:", train_files)
-        print("Validation files:", val_files)
-        diagnostic = None
-        if diagnostics:
-            diagnostic = ValueDiagnostics(
-                train_files, val_files, split_seed, diagnostic_chunks,
-                diagnostic_samples, diagnostic_report,
-            )
-            diagnostic.record({
-                "event": "training_config", "training_mode": training_mode,
-                "samples_per_chunk": samples_per_chunk,
-                "max_pool_samples": max_pool_samples,
-                "trace_chunk_probes": trace_chunk_probes,
-            })
 
         mixed_dataset = None
         if training_mode == "mixed":
             mixed_dataset = build_mixed_pool(
-                train_files, samples_per_chunk, max_pool_samples, split_seed, diagnostic,
+                train_files, samples_per_chunk, max_pool_samples, split_seed,
             )
 
         # ==========================================
@@ -347,28 +325,14 @@ class Value_network(nn.Module):
 
             train_loss = 0
             train_samples = 0
-            epoch_confusion_matrix = torch.zeros(
-                (2, 2),
-                dtype=torch.long,
-                device=device,
-            )
+            train_correct = 0
 
             if training_mode == "mixed":
                 training_groups = [("mixed_pool", mixed_dataset)]
             else:
                 training_groups = [(filename, None) for filename in train_files]
-            if diagnostic is not None:
-                diagnostic.record({
-                    "event": "training_order", "epoch": epoch + 1,
-                    "groups": [filename for filename, _ in training_groups],
-                })
 
             for i, (filename, prepared_dataset) in enumerate(training_groups):
-                train_confusion_matrix = torch.zeros(
-                                (2, 2),
-                                dtype=torch.long,
-                                device=device,
-                            )
                 print(
                     f"[Train {i + 1}/{len(training_groups)}] "
                     f"训练数据: {filename}"
@@ -384,8 +348,6 @@ class Value_network(nn.Module):
                         states = data["states"]
                         results = data["results"]
                     dataset = GoDataset(states, results)
-                    if diagnostic is not None and epoch == 0:
-                        diagnostic.capture("train", filename, states, results)
                     del states, results
 
                 loader = DataLoader(
@@ -412,18 +374,7 @@ class Value_network(nn.Module):
                     # Count this batch's predictions before updating weights.
                     predicted = (output >= 0).long()
                     actual = results_batch.long()
-                    train_confusion_matrix[0, 0] += (
-                        (actual == 0) & (predicted == 0)
-                    ).sum()
-                    train_confusion_matrix[0, 1] += (
-                        (actual == 0) & (predicted == 1)
-                    ).sum()
-                    train_confusion_matrix[1, 0] += (
-                        (actual == 1) & (predicted == 0)
-                    ).sum()
-                    train_confusion_matrix[1, 1] += (
-                        (actual == 1) & (predicted == 1)
-                    ).sum()
+                    train_correct += int((predicted == actual).sum().item())
 
                     loss = criterion(
                         output,
@@ -451,14 +402,6 @@ class Value_network(nn.Module):
                     f"Training group average loss: {chunk_loss / chunk_samples:.4f}"
                     if chunk_samples else "Chunk average loss: n/a (empty chunk)"
                 )
-                print(
-                    "Online train confusion matrix "
-                    "(rows=true [White, Black], columns=predicted [White, Black]):"
-                )
-                print(train_confusion_matrix.cpu().tolist())
-                epoch_confusion_matrix += train_confusion_matrix
-                if diagnostic is not None and training_mode == "chunk" and trace_chunk_probes:
-                    diagnostic.trace_training(self, epoch + 1, filename, batch_size)
                 # -------------------------------
                 # Free memory
                 # -------------------------------
@@ -488,11 +431,7 @@ class Value_network(nn.Module):
 
             val_loss = 0
             val_samples = 0
-            confusion_matrix = torch.zeros(
-                (2, 2),
-                dtype=torch.long,
-                device=device,
-            )
+            val_correct = 0
 
             with torch.no_grad():
 
@@ -512,8 +451,6 @@ class Value_network(nn.Module):
                         results
                     )
 
-                    if diagnostic is not None and epoch == 0:
-                        diagnostic.capture("val", filename, states, results)
                     chunk_val_loss = 0.0
                     chunk_val_correct = 0
                     chunk_val_samples = 0
@@ -534,18 +471,7 @@ class Value_network(nn.Module):
                         # corresponds to a predicted probability of 0.5.
                         predicted = (output >= 0).long()
                         actual = results_batch.long()
-                        confusion_matrix[0, 0] += (
-                            (actual == 0) & (predicted == 0)
-                        ).sum()
-                        confusion_matrix[0, 1] += (
-                            (actual == 0) & (predicted == 1)
-                        ).sum()
-                        confusion_matrix[1, 0] += (
-                            (actual == 1) & (predicted == 0)
-                        ).sum()
-                        confusion_matrix[1, 1] += (
-                            (actual == 1) & (predicted == 1)
-                        ).sum()
+                        val_correct += int((predicted == actual).sum().item())
 
                         loss = criterion(
                             output,
@@ -569,13 +495,6 @@ class Value_network(nn.Module):
 
                     print(f"[Val chunk] loss={chunk_val_loss / chunk_val_samples:.4f}, "
                           f"accuracy={chunk_val_correct / chunk_val_samples:.2%}")
-                    if diagnostic is not None:
-                        diagnostic.record({
-                            "event": "validation_chunk", "epoch": epoch + 1,
-                            "file": filename, "samples": chunk_val_samples,
-                            "loss": chunk_val_loss / chunk_val_samples,
-                            "accuracy": chunk_val_correct / chunk_val_samples,
-                        })
 
                     # -------------------------------
                     # Free memory
@@ -599,26 +518,10 @@ class Value_network(nn.Module):
             if val_samples == 0:
                 raise ValueError("validation split contains no samples")
             val_loss /= val_samples
-            print(
-                "Validation confusion matrix "
-                "(rows=true [White, Black], columns=predicted [White, Black]):"
-            )
-            print(confusion_matrix.cpu().tolist())
-
             print(f"Online train accuracy: "
-                  f"{epoch_confusion_matrix.diag().sum().item() / train_samples:.2%}")
+                  f"{train_correct / train_samples:.2%}")
             print(f"Validation accuracy: "
-                  f"{confusion_matrix.diag().sum().item() / val_samples:.2%}")
-            diagnostic_metrics = None
-            if diagnostic is not None:
-                diagnostic_metrics = diagnostic.run(self, epoch + 1, batch_size)
-                diagnostic.record({
-                    "event": "epoch_totals", "epoch": epoch + 1,
-                    "training_samples": train_samples,
-                    "online_train_loss": train_loss, "validation_loss": val_loss,
-                    "online_train_confusion": epoch_confusion_matrix.cpu().tolist(),
-                    "validation_confusion": confusion_matrix.cpu().tolist(),
-                })
+                  f"{val_correct / val_samples:.2%}")
 
             # ======================================
             # Learning Rate
@@ -681,7 +584,6 @@ class Value_network(nn.Module):
                 "train_files": sorted(train_files),
                 "val_files": val_files,
                 "split_seed": split_seed,
-                "diagnostic_metrics": diagnostic_metrics,
                 "size": self.size,
                 "num_blocks": self.num_blocks,
 

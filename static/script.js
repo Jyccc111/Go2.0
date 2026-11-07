@@ -8,6 +8,13 @@ const showRecommendationsButton = document.getElementById("show-ai-recommendatio
 const recommendationsText = document.getElementById("ai-recommendations");
 const predictGameResultButton = document.getElementById("predict-game-result");
 const valuePredictionText = document.getElementById("value-prediction");
+const countScoreButton = document.getElementById("count-score");
+const countSgfScoreButton = document.getElementById("count-sgf-score");
+let scoringReplay = false;
+const scoreResult = document.getElementById("score-result");
+let scoreRequestId = 0;
+let scoreTerritory = null;
+let scoredBoard = null;
 const gameStatus = document.getElementById("game-status");
 const sessionDialog = document.getElementById("session-dialog");
 const sgfDialog = document.getElementById("sgf-dialog");
@@ -93,6 +100,11 @@ startGameButton.addEventListener("click", startGame);
 passMoveButton.addEventListener("click", passMove);
 showRecommendationsButton.addEventListener("click", showAiRecommendations);
 predictGameResultButton.addEventListener("click", predictGameResult);
+countScoreButton.addEventListener("click", countScore);
+countSgfScoreButton.addEventListener("click", () => {
+    sgfDialog.close();
+    countScore();
+});
 stepSgfButton.addEventListener("click", stepSgf);
 playSgfAllButton.addEventListener("click", playSgfAll);
 
@@ -136,7 +148,12 @@ function drawStone(x, y, color) {
 }
 
 function showSessionState(data) {
+    resetScore();
     if (data.game_over) {
+        if (data.result === "W+R" || data.result === "B+R") {
+            gameStatus.textContent = data.result === "W+R" ? "黑棋投降，白棋获胜。" : "白棋投降，黑棋获胜。";
+            return;
+        }
         gameStatus.textContent = data.result === "two_passes"
             ? "双方连续 Pass，对局结束。"
             : "对局结束：" + (data.result || "完成");
@@ -170,8 +187,8 @@ async function startGame() {
         }
         sessionDialog.close();
         currentColor = data.next_player;
-        drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
         showSessionState(data);
+        drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
         const bothAi =
             Number(document.getElementById("player-black").value) === 0 &&
             Number(document.getElementById("player-white").value) === 0;
@@ -205,8 +222,8 @@ async function runSelfPlay(initialState) {
 
         clearAiRecommendations();
         currentColor = state.next_player;
-        drawBoardState(state.board, state.cluster_air, state.islegal, [], state.num_eat);
         showSessionState(state);
+        drawBoardState(state.board, state.cluster_air, state.islegal, [], state.num_eat);
         moves += 1;
     }
 
@@ -236,8 +253,8 @@ async function playMove(row, col) {
      }
     clearAiRecommendations();
     currentColor = Number.isInteger(data.next_player) ? data.next_player : -currentColor;
-    drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
     showSessionState(data);
+    drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
 
 
 }
@@ -255,14 +272,58 @@ async function passMove() {
     }
     clearAiRecommendations();
     if (Number.isInteger(data.next_player)) currentColor = data.next_player;
-    drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
     showSessionState(data);
+    drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
 }
 
 function clearAiRecommendations() {
     currentRecommendations = [];
     recommendationsText.textContent = "";
     valuePredictionText.textContent = "";
+}
+
+function resetScore(isReplay = false) {
+    scoreRequestId += 1;
+    scoreTerritory = null;
+    scoredBoard = null;
+    scoreResult.textContent = "";
+    scoringReplay = isReplay;
+    countScoreButton.textContent = isReplay ? "棋谱点目" : "点目";
+    updateScoreButtons();
+}
+
+function updateScoreButtons(pending = false) {
+    countScoreButton.disabled = pending || (scoringReplay && isPlayingSgf);
+    countSgfScoreButton.disabled = !scoringReplay || countScoreButton.disabled;
+}
+
+async function countScore() {
+    if (countScoreButton.disabled) return;
+    const requestId = ++scoreRequestId;
+    updateScoreButtons(true);
+    scoreResult.textContent = "正在点目…";
+    try {
+        const route = scoringReplay ? "/sgf/score" : "/score";
+        const response = await fetch(route, { cache: "no-store" });
+        const data = await response.json();
+        if (requestId !== scoreRequestId) return;
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || "点目失败。");
+        }
+        scoreTerritory = data.territory;
+        scoredBoard = data.scored_board;
+        drawBoardState(currentBoard, currentClusterAir, currentLegal, currentCaptures, currentNumEat);
+        const format = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 8 });
+        const winner = data.winner === "black" ? "黑棋" : "白棋";
+        const outcome = data.winner === "draw" ? "和棋" : `${winner}胜 ${format.format(data.margin)} 目`;
+        scoreResult.textContent = `点目：黑棋 ${format.format(data.black_score)} 目，` +
+            `白棋 ${format.format(data.white_score)} 目（含贴目 ${format.format(data.komi)}），${outcome}。` +
+            "死棋保留在棋盘上，方块颜色表示点目后的归属。";
+    } catch (error) {
+        if (requestId === scoreRequestId) scoreResult.textContent = error.message;
+    } finally {
+        if (requestId === scoreRequestId) updateScoreButtons();
+    }
 }
 
 async function predictGameResult() {
@@ -301,6 +362,7 @@ async function showAiRecommendations() {
         if (!response.ok || !data.success) {
             throw new Error(data.error || "无法获取 AI 推荐。");
         }
+        if (scoringReplay) resetScore();
         currentRecommendations = data.recommendations || [];
         drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
         if (currentRecommendations.length === 0) {
@@ -358,6 +420,27 @@ function drawBoardState(board, clusterAir, legal = null, captures = [], numEat =
     if (showNumEatCheckbox.checked && numEat !== null) {
         drawNumEat(numEat);
     }
+    drawTerritoryMarkers();
+}
+
+function drawTerritoryMarkers() {
+    if (!scoreTerritory || !scoredBoard) return;
+    const size = gridWidth * 0.3;
+    ctx.save();
+    ctx.strokeStyle = "#33291c";
+    ctx.lineWidth = 1;
+    for (let row = 0; row < 19; row++) {
+        for (let col = 0; col < 19; col++) {
+            const owner = scoreTerritory[row][col];
+            if (scoredBoard[row][col] !== 0 || owner === 0) continue;
+            const x = (col + 1) * gridWidth - size / 2;
+            const y = (row + 1) * gridWidth - size / 2;
+            ctx.fillStyle = owner === 1 ? "#181818" : "#fffdf8";
+            ctx.fillRect(x, y, size, size);
+            ctx.strokeRect(x, y, size, size);
+        }
+    }
+    ctx.restore();
 }
 
 function drawRecommendationMarkers() {
@@ -433,6 +516,7 @@ function drawLegalPoints(legal) {
 }
 
 function showSgfState(data) {
+    resetScore(true);
     clearAiRecommendations();
     currentSgfIndex = data.index || 0;
     sgfDone = Boolean(data.done);
@@ -641,6 +725,7 @@ async function playSgfAll() {
     if (!sgfLoaded || sgfStopped || isPlayingSgf) return;
 
     isPlayingSgf = true;
+    updateScoreButtons();
     playSgfAllButton.disabled = true;
     stepSgfButton.disabled = true;
     try {
@@ -656,6 +741,7 @@ async function playSgfAll() {
         sgfProgress.textContent = `回放失败：${error.message}`;
     } finally {
         isPlayingSgf = false;
+        updateScoreButtons();
         stepSgfButton.disabled = !sgfLoaded || sgfStopped || sgfDone;
         playSgfAllButton.disabled = !sgfLoaded || sgfStopped || sgfDone;
     }
@@ -704,8 +790,8 @@ async function loadBoard() {
     const data = await response.json();
     if (Number.isInteger(data.next_player)) currentColor = data.next_player;
 
-    drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
     if (gameStatus) showSessionState(data);
+    drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
 }
 
 loadBoard();

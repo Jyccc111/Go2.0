@@ -18,9 +18,11 @@
                 <button id="pass-move" type="button">Pass</button>
                 <button id="toggle-air" type="button">显示气数</button>
                 <button id="show-ai-recommendations" type="button">AI 推荐</button>
+                <button id="count-score" type="button" disabled>点目</button>
                 <button id="predict-game-result" type="button">预测胜负</button>
             </div>
             <div id="ai-recommendations" aria-live="polite"></div>
+            <div id="score-result" role="status"></div>
             <div id="value-prediction" aria-live="polite"></div>
         </main>
 
@@ -56,6 +58,7 @@
                 <input id="sgf-file" type="file" accept=".sgf">
                 <button id="load-sgf" type="button">载入棋谱</button>
                 <button id="step-sgf" type="button" disabled>下一手</button>
+                <button id="count-sgf-score" type="button" disabled>当前盘面点目</button>
                 <button id="play-sgf-all" type="button" disabled>播放到最后</button>
                 <label><input id="show-legal" type="checkbox">显示合法点</label>
                 <label><input id="show-num-eat" type="checkbox">显示 num_eat</label>
