@@ -10,7 +10,7 @@ import torch
 from Train_net import Policy_network
 from rl.game import GoAdapter, PASS, RESIGN
 from unittest.mock import patch
-from rl.policy import distribution, load_policy, save_checkpoint
+from rl.policy import distribution, load_policy, save_checkpoint, CheckpointFileError
 from rl.train import rollout, reinforce_update
 
 
@@ -135,107 +135,166 @@ class SmokeTests(unittest.TestCase):
                 # Correct resignation increases its weight; mistaken resignation reduces it.
                 self.assertGreater(change * (-outcome), 0)
 
-    def test_cli_checkpoint_and_resume(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            model = Policy_network(size=2, num_blocks=0)
-            with torch.no_grad():
-                model.network[-1].bias[PASS] = 100
-            source = root / 'source.pth'
-            torch.save(model.network.state_dict(), source)
-            source_bytes = source.read_bytes()
-            from rl.train import main
-            with patch('Game.Game.cal_result', side_effect=AssertionError('short game scored')):
-                main(['--opponent-mode', 'self', '--checkpoint', str(source), '--output', str(root/'first'),
-                  '--episodes', '1', '--max-moves', '2', '--no-upload', '--pool-size', '1',
-                  '--snapshot-every', '1'])
-            main(['--opponent-mode', 'self', '--checkpoint', str(root/'first'/'last.pth'), '--resume',
-                  '--output', str(root/'second'), '--episodes', '1', '--max-moves', '2', '--no-upload'])
-            _, checkpoint = load_policy(root/'second'/'last.pth')
-            self.assertEqual(checkpoint['episode'], 2)
-            for key, value in model.network.state_dict().items():
-                self.assertTrue(torch.equal(value, checkpoint['model_state_dict'][key]))
-            self.assertEqual(source.read_bytes(), source_bytes)
-            self.assertTrue((root/'first'/'policy-1.pth').exists())
-            game_dir = next((root/'first'/'games').glob('episode-*'))
-            self.assertTrue((game_dir/'board.png').exists())
-            self.assertIsNone(json.loads((game_dir/'result.json').read_text())['value_label'])
-            with np.load(game_dir/'position.npz', allow_pickle=False) as data:
-                self.assertEqual(data['states'].shape, (0,8,19,19))
-                self.assertEqual(data['results'].size, 0)
+    @staticmethod
+    def _tiny_checkpoint(root):
+        model = Policy_network(size=2, num_blocks=0)
+        with torch.no_grad():
+            model.network[-1].bias[RESIGN] = 100
+        path = root/'source.pth'
+        torch.save(model.network.state_dict(), path)
+        return path
 
-    def test_cli_hub_load_archive_upload_and_retry(self):
+    def test_epoch_checkpoint_and_resume_counts_zero_loss_steps(self):
         from rl.train import main
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root/'source.pth'
-            torch.save(Policy_network(size=2,num_blocks=0).state_dict(), source)
-            def short_resign(model, env, *args):
-                state, mask = env.observe(), env.legal_mask()
-                env.step(RESIGN)
-                return [(state,mask,RESIGN,1)]
-            with patch('rl.train.resolve_checkpoint', return_value=(str(source), {'repo':'mock'})) as load, \
-                 patch('rl.train.rollout', side_effect=short_resign), \
-                 patch('rl.train.upload_game') as upload, \
-                 patch('rl.train.upload_training') as final_upload:
-                main(['--opponent-mode', 'self', '--output',str(root/'run'),'--episodes','2'])
-                self.assertIsNone(load.call_args.args[0])
-                self.assertEqual(upload.call_count,2)
-                final_upload.assert_called_once()
-                for game_dir in (root/'run'/'games').glob('episode-*'):
-                    metadata = json.loads((game_dir/'result.json').read_text())
-                    self.assertEqual(metadata['result'], 'W+R')
-                    self.assertEqual(metadata['value_label'], 0)
-                    with np.load(game_dir/'position.npz', allow_pickle=False) as data:
-                        self.assertEqual(data['states'].shape,(1,8,19,19))
-                        np.testing.assert_array_equal(data['results'], [0])
-                upload.reset_mock()
-                final_upload.reset_mock()
-                load.reset_mock()
-                main(['--opponent-mode', 'self', '--output',str(root/'run'),'--upload-only'])
-                load.assert_not_called()
-                self.assertEqual(upload.call_count,2)
-                final_upload.assert_called_once()
+            root=Path(directory)
+            source=self._tiny_checkpoint(root)
+            main(['--opponent-mode','self','--checkpoint',str(source),'--output',str(root/'first'),
+                  '--epochs','1','--updates-per-epoch','1','--no-upload'])
+            _,checkpoint=load_policy(root/'first'/'last.pth')
+            self.assertEqual((checkpoint['epoch'],checkpoint['total_updates']), (1,1))
+            main(['--opponent-mode','self','--checkpoint',str(root/'first'/'last.pth'),'--resume',
+                  '--output',str(root/'second'),'--epochs','1','--updates-per-epoch','1','--no-upload'])
+            _,checkpoint=load_policy(root/'second'/'last.pth')
+            self.assertEqual((checkpoint['epoch'],checkpoint['total_updates'],checkpoint['episode']), (2,2,2))
+            self.assertTrue((root/'second'/'epochs'/'epoch-000002'/'ready.json').is_file())
+            self.assertEqual((root/'second'/'last.pth').read_bytes(),
+                             (root/'second'/'epochs'/'epoch-000002'/'policy.pth').read_bytes())
 
-    def test_default_history_uses_latest_and_alternates_learner(self):
+    def test_epochs_exact_updates_skip_no_actions_and_historical_provenance(self):
         from rl.train import main
+        import rl.train as train
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            checkpoint = root/'latest.pth'
-            torch.save(Policy_network(size=2,num_blocks=0).state_dict(), checkpoint)
-            latest = dict(repo_id='owner/rl', filename='last.pth', revision='new', identity='sha256:new')
-            old = dict(repo_id='owner/rl', filename='last.pth', revision='old', identity='sha256:old')
-            opponent = Policy_network(size=2,num_blocks=0).eval().requires_grad_(False)
-            before = copy.deepcopy(opponent.state_dict())
-            seen = []
-            def short_game(model, env, actual_opponent, learner_color, temperature):
+            root=Path(directory)
+            source=self._tiny_checkpoint(root)
+            latest=dict(repo_id='owner/rl',filename='last.pth',revision='new',identity='sha256:new')
+            old=dict(repo_id='owner/rl',filename='last.pth',revision='old',identity='sha256:old')
+            opponent=Policy_network(size=2,num_blocks=0).eval().requires_grad_(False)
+            before=copy.deepcopy(opponent.state_dict())
+            kinds=iter(['skip','no_actions','update','update','update','update'])
+            colors=[]
+            def game(model,env,actual_opponent,learner_color,temperature,sampler):
                 self.assertIs(actual_opponent,opponent)
-                seen.append(learner_color)
-                # End on the learner's turn with a resignation.
-                from Game import Player
-                env.game.current_player = Player(learner_color)
-                env._refresh()
-                state,mask = env.observe(),env.legal_mask()
+                colors.append(learner_color)
+                state,mask=env.observe(),env.legal_mask()
+                sampler.consider(state,env.game.board.board,env.moves,env.player)
+                kind=next(kinds)
+                if kind=='skip':
+                    env.step(PASS)
+                    env.step(PASS)
+                    return []
+                if kind=='no_actions':
+                    env.step(RESIGN)
+                    return []
+                if env.player != learner_color:
+                    env.step(PASS)
+                    state,mask=env.observe(),env.legal_mask()
+                    sampler.consider(state,env.game.board.board,env.moves,env.player)
                 env.step(RESIGN)
                 return [(state,mask,RESIGN,learner_color)]
             with patch('rl.train.discover_history',return_value=(latest,[old])) as discover, \
-                 patch('rl.train.download_version',return_value=str(checkpoint)) as download, \
+                 patch('rl.train.download_version',return_value=str(source)), \
                  patch('rl.train.HistoricalOpponentPool') as pool, \
-                 patch('rl.train.rollout',side_effect=short_game):
+                 patch('rl.train.rollout',side_effect=game), \
+                 patch('rl.train.save_checkpoint',wraps=train.save_checkpoint) as save, \
+                 patch('rl.train.upload_epoch_value') as upload_value, \
+                 patch('rl.train.upload_training') as upload_model:
                 pool.return_value.sample.return_value=(opponent,old)
-                main(['--output',str(root/'run'),'--episodes','2','--no-upload'])
+                main(['--output',str(root/'run'),'--epochs','2','--updates-per-epoch','2'])
                 discover.assert_called_once()
-                download.assert_called_once()
-                self.assertEqual(download.call_args.args[0],latest)
-                self.assertEqual(pool.return_value.sample.call_count,2)
-            self.assertEqual(seen,[1,-1])
+                self.assertEqual(save.call_count,2)
+                self.assertEqual(upload_value.call_count,2)
+                self.assertEqual(upload_model.call_count,2)
+                self.assertEqual([call.kwargs['epoch'] for call in upload_model.call_args_list],[1,2])
+            self.assertEqual(colors,[1,-1,1,-1,1,-1])
             for key,value in opponent.state_dict().items():
                 self.assertTrue(torch.equal(value,before[key]))
+            manifests=[]
+            for epoch in (1,2):
+                path=root/'run'/'epochs'/f'epoch-{epoch:06d}'
+                metadata=json.loads((path/'metadata.json').read_text())
+                self.assertEqual(metadata['updates'],2)
+                manifests.append(metadata)
+                with np.load(path/'value.npz',allow_pickle=False) as data:
+                    self.assertEqual(len(set(data['episodes'])),len(data['states']))
+                with __import__('zipfile').ZipFile(path/'boards.zip') as archive:
+                    self.assertEqual(len(archive.namelist()),metadata['attempted_games']*2)
+            self.assertEqual([m['attempted_games'] for m in manifests],[4,2])
+            self.assertEqual([m['sample_count'] for m in manifests],[3,2])
+            _,checkpoint=load_policy(root/'run'/'last.pth')
+            self.assertEqual((checkpoint['epoch'],checkpoint['total_updates'],checkpoint['episode']),(2,4,6))
             for file in (root/'run'/'games').glob('*/result.json'):
                 metadata=json.loads(file.read_text())
                 self.assertEqual(metadata['learner_source'],latest)
                 self.assertEqual(metadata['opponent_source'],old)
-            self.assertTrue((root/'run'/'initial.pth').is_file())
+                self.assertEqual(metadata['board_kind'],'random_pre_action')
+
+    def test_partial_epoch_is_not_saved_or_uploaded_as_complete(self):
+        from rl.train import main
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            model=Policy_network(size=2,num_blocks=0)
+            with torch.no_grad():
+                model.network[-1].bias[PASS]=100
+            source=root/'source.pth'
+            torch.save(model.state_dict(),source)
+            with patch('rl.train.upload_epoch_value') as value,patch('rl.train.upload_training') as upload, \
+                 self.assertRaisesRegex(RuntimeError,'incomplete'):
+                main(['--checkpoint',str(source),'--opponent-mode','self','--output',str(root/'run'),
+                      '--updates-per-epoch','1','--max-games-per-epoch','2'])
+            value.assert_not_called()
+            upload.assert_not_called()
+            path=root/'run'/'epochs'/'epoch-000001'
+            metadata=json.loads((path/'metadata.json').read_text())
+            self.assertFalse(metadata['complete'])
+            self.assertEqual(metadata['updates'],0)
+            self.assertFalse((path/'ready.json').exists())
+            self.assertFalse((root/'run'/'last.pth').exists())
+
+    def test_epoch_upload_failure_retries_only_failed_repository(self):
+        from rl.train import main
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            source=self._tiny_checkpoint(root)
+            with patch('rl.train.upload_epoch_value') as value, \
+                 patch('rl.train.upload_training',side_effect=[ConnectionError('offline'),None]) as model:
+                with self.assertRaises(ConnectionError):
+                    main(['--checkpoint',str(source),'--opponent-mode','self','--output',str(root/'run'),
+                          '--updates-per-epoch','1'])
+                path=root/'run'/'epochs'/'epoch-000001'
+                self.assertTrue(json.loads((path/'metadata.json').read_text())['complete'])
+                self.assertTrue(json.loads((path/'uploads.json').read_text())['value'])
+                main(['--output',str(root/'run'),'--upload-only'])
+                self.assertEqual(value.call_count,1)
+                self.assertEqual(model.call_count,2)
+                main(['--output',str(root/'run'),'--upload-only'])
+                self.assertEqual(model.call_count,2)
+                ready=json.loads((path/'ready.json').read_text())
+                ready['epoch']=2
+                (path/'ready.json').write_text(json.dumps(ready))
+                with self.assertRaisesRegex(ValueError,'pairing'):
+                    main(['--output',str(root/'run'),'--upload-only'])
+
+    def test_no_records_does_not_step_optimizer(self):
+        model=Policy_network(size=2,num_blocks=0)
+        optimizer=torch.optim.SGD(model.parameters(),lr=0.1)
+        with patch.object(optimizer,'step') as step:
+            self.assertIsNone(reinforce_update(model,optimizer,[],{1:1,-1:-1}))
+            step.assert_not_called()
+
+    def test_pointer_diagnostics_and_legacy_checkpoint_loading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'model.pth'
+            for data,message in ((b'../../blobs/hash','symlink target'),
+                                 (b'version https://git-lfs.github.com/spec/v1','Git LFS'),
+                                 (b'', 'Empty checkpoint')):
+                path.write_bytes(data)
+                with self.assertRaisesRegex(CheckpointFileError,message):
+                    load_policy(path)
+            model=Policy_network(size=2,num_blocks=0)
+            torch.save(model.state_dict(),path,_use_new_zipfile_serialization=False)
+            loaded,_=load_policy(path)
+            self.assertEqual(loaded.size,2)
 
     def test_masks_and_gradient_sign(self):
         mask = np.zeros(363, bool)

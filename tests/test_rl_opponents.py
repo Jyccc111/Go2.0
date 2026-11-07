@@ -1,5 +1,8 @@
 """Historical opponent metadata and lazy loading, with no live Hub requests."""
 from types import SimpleNamespace as NS
+from pathlib import Path
+import tempfile
+import hashlib
 import random
 import unittest
 from unittest.mock import Mock, patch
@@ -110,12 +113,31 @@ class HistoricalOpponentTests(unittest.TestCase):
 
     def test_download_always_uses_pinned_revision(self):
         item=source()
-        with patch('rl.opponents.hf_hub_download',return_value='/cached/model.pth') as download:
+        with patch('rl.opponents.hf_hub_download',return_value='/cached/model.pth') as download, \
+             patch('rl.opponents.verify_checkpoint_file'):
             self.assertEqual(download_version(item,'/cache'),'/cached/model.pth')
         download.assert_called_once_with(repo_id='owner/policy',filename='last.pth',
             revision='old-commit',repo_type='model',cache_dir='/cache')
         with self.assertRaisesRegex(ValueError,'pinned'):
             download_version(dict(item,revision=None))
+
+    def test_checksum_failure_retries_same_revision_once(self):
+        from rl.policy import CheckpointFileError
+        with tempfile.TemporaryDirectory() as directory:
+            wrong=Path(directory)/'wrong.pth'
+            good=Path(directory)/'good.pth'
+            wrong.write_bytes(b'../../blobs/pointer')
+            good.write_bytes(b'actual checkpoint bytes')
+            version=dict(source(),identity='sha256:'+hashlib.sha256(good.read_bytes()).hexdigest())
+            with patch('rl.opponents.hf_hub_download',side_effect=[str(wrong),str(good)]) as download:
+                self.assertEqual(download_version(version),str(good))
+                self.assertEqual(download.call_count,2)
+                self.assertTrue(download.call_args.kwargs['force_download'])
+                self.assertEqual(download.call_args.kwargs['revision'],version['revision'])
+            with patch('rl.opponents.hf_hub_download',return_value=str(wrong)) as download, \
+                 self.assertRaises(CheckpointFileError):
+                download_version(version)
+            self.assertEqual(download.call_count,2)
 
     def test_pool_loads_only_uniform_choice_and_freezes_opponent(self):
         candidates=[source('first','commit1'),source('second','commit2')]

@@ -15,10 +15,10 @@ MODEL_REPO = 'Jycccc111/Go_RL_policy'
 FALLBACK_REPO = 'Jycccc111/Go-Policy'
 DATA_REPO = 'Jycccc111/Go_value_data'
 SOURCE_FILES = (
-    'Game.py', 'Train_net.py', 'Reinforcement_learning.py', 'README_RL.md',
+    'Game.py', 'Train_net.py', 'Train_value.py', 'Reinforcement_learning.py', 'README_RL.md',
     'requirements-rl.txt', 'rl/__init__.py', 'rl/game.py', 'rl/policy.py',
     'rl/train.py', 'rl/hub.py', 'rl/opponents.py', 'tests/test_rl.py',
-    'tests/test_rl_hub.py', 'tests/test_rl_opponents.py',
+    'tests/test_rl_hub.py', 'tests/test_rl_opponents.py', 'rl/value_data.py', 'tests/test_rl_value_data.py',
 )
 
 
@@ -144,7 +144,11 @@ def _png(board,metadata):
         image[distance <= 12**2] = (15,15,15) if board[r,c] == 1 else (245,245,238)
     _text(image,f"EPISODE {metadata.get('episode','?')}  MOVES {metadata.get('moves','?')}",22,610)
     _text(image,f"RESULT {metadata.get('result') or 'UNKNOWN'}",22,635)
-    _text(image,metadata.get('skip_reason') or metadata.get('result_source') or 'COMPLETED',22,660)
+    footer = metadata.get('skip_reason') or metadata.get('result_source') or 'COMPLETED'
+    if 'sample_move_index' in metadata:
+        side = 'B' if metadata.get('sample_player') == 1 else 'W'
+        footer = f"SAMPLE AFTER {metadata['sample_move_index']} ACTIONS  TO PLAY {side}"
+    _text(image,footer,22,660)
     def chunk(kind,payload):
         return struct.pack('>I',len(payload))+kind+payload+struct.pack('>I',zlib.crc32(kind+payload)&0xffffffff)
     pixels = b''.join(b'\x00'+row.tobytes() for row in image)
@@ -204,7 +208,7 @@ def snapshot_code(output,project_root):
     return target
 
 
-def upload_training(output,project_root,run_id,*,api=None,model_repo=MODEL_REPO):
+def upload_training(output,project_root,run_id,*,api=None,model_repo=MODEL_REPO,epoch=None):
     """Commit local weights + allowlisted code after a completed run.
 
     No recursive project upload, so .env/tokens/caches/unrelated files stay local.
@@ -213,7 +217,7 @@ def upload_training(output,project_root,run_id,*,api=None,model_repo=MODEL_REPO)
     api = api or HfApi()
     run_id = _run_id(run_id)
     output,project_root = Path(output),Path(project_root)
-    weights = output/'last.pth'
+    weights = output/'last.pth' if epoch is None else (output/'epochs'/f'epoch-{int(epoch):06d}'/'policy.pth')
     if not weights.is_file():
         raise FileNotFoundError(weights)
     code = output/'code'
@@ -221,6 +225,15 @@ def upload_training(output,project_root,run_id,*,api=None,model_repo=MODEL_REPO)
         raise FileNotFoundError(f'Missing frozen source snapshot: {code}')
     operations = [CommitOperationAdd(path_in_repo='last.pth',path_or_fileobj=str(weights)),
                   CommitOperationAdd(path_in_repo=f'runs/{run_id}/last.pth',path_or_fileobj=str(weights))]
+    if epoch is not None:
+        operations.append(CommitOperationAdd(
+            path_in_repo=f'runs/{run_id}/epochs/epoch-{int(epoch):06d}/policy.pth',
+            path_or_fileobj=str(weights)))
+        ready = weights.parent/'ready.json'
+        if ready.is_file():
+            operations.append(CommitOperationAdd(
+                path_in_repo=f'runs/{run_id}/epochs/epoch-{int(epoch):06d}/ready.json',
+                path_or_fileobj=str(ready)))
     for relative in SOURCE_FILES:
         source = code/relative
         if not source.is_file():
@@ -235,7 +248,7 @@ def upload_training(output,project_root,run_id,*,api=None,model_repo=MODEL_REPO)
     if (output/'run.json').is_file():
         operations.append(CommitOperationAdd(path_in_repo=f'runs/{run_id}/run.json',path_or_fileobj=str(output/'run.json')))
     return api.create_commit(repo_id=model_repo,repo_type='model',operations=operations,
-                             commit_message=f'Save REINFORCE weights and code {run_id}')
+                             commit_message=f'Save REINFORCE weights and code {run_id}' + (f' epoch {epoch}' if epoch is not None else ''))
 
 
 def bootstrap_opponent(learner_source, *, cache_dir=None, api=None):

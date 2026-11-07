@@ -165,6 +165,16 @@ class HubSmokeTests(unittest.TestCase):
             self.assertNotIn('.env',paths)
             operation = next(op for op in kwargs['operations'] if op.path_in_repo == 'Game.py')
             self.assertEqual(Path(operation.path_or_fileobj).read_text(),'original code')
+            epoch=output/'epochs'/'epoch-000001'
+            epoch.mkdir(parents=True)
+            (epoch/'policy.pth').write_bytes(b'epoch one immutable model')
+            upload_training(output,project,'run-123',api=api,epoch=1)
+            operations=api.create_commit.call_args.kwargs['operations']
+            current=next(op for op in operations if op.path_in_repo=='last.pth')
+            self.assertEqual(Path(current.path_or_fileobj).read_bytes(),b'epoch one immutable model')
+            self.assertIn('runs/run-123/epochs/epoch-000001/policy.pth',
+                          {op.path_in_repo for op in operations})
+
 
 
 if __name__ == '__main__':

@@ -10,7 +10,7 @@ from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.errors import RevisionNotFoundError
 
 from .hub import MODEL_REPO, _policy_file
-from .policy import load_policy
+from .policy import load_policy, verify_checkpoint_file, CheckpointFileError
 
 
 class NoHistoricalOpponentError(ValueError):
@@ -107,9 +107,17 @@ def download_version(source, cache_dir=None):
     """Download the exact pinned file represented by a discovery result."""
     if not source.get('revision'):
         raise ValueError('A pinned commit revision is required')
-    return hf_hub_download(repo_id=source['repo_id'], filename=source['filename'],
-                           revision=source['revision'], repo_type='model',
-                           cache_dir=cache_dir)
+    options = dict(repo_id=source['repo_id'], filename=source['filename'],
+                   revision=source['revision'], repo_type='model', cache_dir=cache_dir)
+    path = hf_hub_download(**options)
+    try:
+        verify_checkpoint_file(path, source.get('identity'))
+    except CheckpointFileError:
+        # One bounded retry of the SAME pinned version; never a policy fallback.
+        path = hf_hub_download(**options, force_download=True)
+        verify_checkpoint_file(path, source.get('identity'))
+    return path
+
 
 
 class HistoricalOpponentPool:
