@@ -29,6 +29,8 @@ class HistoricalOpponentTests(unittest.TestCase):
     def test_pins_latest_and_collects_ancestors_and_head_snapshots(self):
         api = Mock()
         head = metadata('head', weight('last.pth','new'),
+                        weight('models/policy-current.pth','new'),
+                        weight('models/policy-saved.pth','old1'),
                         weight('runs/new/last.pth','new'),
                         weight('runs/old/last.pth','old1'),
                         weight('bootstrap/seed/initial.pth','seed'))
@@ -45,6 +47,8 @@ class HistoricalOpponentTests(unittest.TestCase):
         self.assertEqual({c['identity'] for c in candidates},
                          {'sha256:old1','sha256:old2','sha256:seed'})
         self.assertEqual(len(candidates), 3)
+        self.assertEqual(next(c for c in candidates if c['identity']=='sha256:old1')['filename'],
+                         'models/policy-saved.pth')
         self.assertTrue(all(c['kind']=='huggingface' for c in candidates))
         self.assertEqual(next(c for c in candidates if c['identity']=='sha256:old2')['revision'], 'commit-old')
         api.list_repo_commits.assert_called_once_with(

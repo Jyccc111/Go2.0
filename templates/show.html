@@ -57,7 +57,11 @@
                         <option value="rl">强化学习模型（最新）</option>
                     </select>
                 </div>
-                <small id="policy-model-hint">双方分别选择；AI 落子及该方的 AI 推荐使用对应模型。AI 可以投降，投降后立即判负。</small>
+                <div class="policy-version-tools">
+                    <button id="refresh-policy-models" type="button">刷新 epoch 列表</button>
+                    <span id="policy-catalog-status" role="status" aria-live="polite">打开设置后自动获取已保存的 epoch。</span>
+                </div>
+                <small id="policy-model-hint">双方可选不同 epoch；同名 epoch 通过训练批次区分。选择用于 AI 落子和该方推荐。AI 可以投降。</small>
                 <label for="komi">贴目</label>
                 <input id="komi" type="number" value="6.5" step="0.5">
                 <button id="start-game" type="button">开始新对局</button>

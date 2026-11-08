@@ -4,7 +4,7 @@ from enum import IntEnum
 from math import isfinite
 
 from Game import Game, Player
-from policy_models import POLICY_MODELS, validate_policy_model
+from policy_models import policy_model_label, validate_policy_model
 
 
 class Type_player(IntEnum):
@@ -259,11 +259,11 @@ class GameSession:
             "player_white": int(self.player_white),
             "komi": self.komi,
             "policy_model": self.policy_model,
-            "policy_model_label": POLICY_MODELS[self.policy_model]["label"] if self.policy_model else "黑白分别设置",
+            "policy_model_label": policy_model_label(self.policy_model) if self.policy_model else "黑白分别设置",
             "policy_model_black": self.policy_model_black,
             "policy_model_white": self.policy_model_white,
-            "policy_model_label_black": POLICY_MODELS[self.policy_model_black]["label"],
-            "policy_model_label_white": POLICY_MODELS[self.policy_model_white]["label"],
+            "policy_model_label_black": policy_model_label(self.policy_model_black),
+            "policy_model_label_white": policy_model_label(self.policy_model_white),
             "game_over": self.game_over,
             "result": self.result,
             "history": list(self.history),

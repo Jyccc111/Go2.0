@@ -84,7 +84,8 @@ def discover_history(*, api=None, model_repo=MODEL_REPO):
     opponents = []
 
     def collect(info):
-        for checkpoint in sorted(_checkpoints(info), key=lambda s: s.rfilename):
+        for checkpoint in sorted(_checkpoints(info),
+                                 key=lambda s: (not s.rfilename.startswith('models/'), s.rfilename)):
             version = _source(model_repo, info.sha, checkpoint)
             if version['identity'] not in seen:
                 seen.add(version['identity'])

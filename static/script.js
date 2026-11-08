@@ -20,6 +20,9 @@ const sessionDialog = document.getElementById("session-dialog");
 const policyModelBlackSelect = document.getElementById("policy-model-black");
 const policyModelWhiteSelect = document.getElementById("policy-model-white");
 const policyModelStatus = document.getElementById("policy-model-status");
+const refreshPolicyModelsButton = document.getElementById("refresh-policy-models");
+const policyCatalogStatus = document.getElementById("policy-catalog-status");
+let policyCatalogLoading = false;
 const sessionInitMessage = document.getElementById("session-init-message");
 let sessionInitializing = false;
 const sgfDialog = document.getElementById("sgf-dialog");
@@ -29,6 +32,7 @@ document.getElementById("open-session-dialog").addEventListener("click", () => {
         sessionInitMessage.dataset.state = "";
     }
     sessionDialog.showModal();
+    loadPolicyModels();
 });
 sessionDialog.addEventListener("cancel", event => {
     if (sessionInitializing) event.preventDefault();
@@ -164,6 +168,59 @@ function drawStone(x, y, color) {
     ctx.fill();
 }
 
+function setPolicySelection(select, value, label) {
+    if (!value) return;
+    if (![...select.options].some(option => option.value === value)) {
+        select.add(new Option(label || "当前选择的 epoch", value));
+    }
+    select.value = value;
+}
+
+function populatePolicyModels(models) {
+    for (const select of [policyModelBlackSelect, policyModelWhiteSelect]) {
+        const previous = select.value;
+        const previousLabel = select.selectedOptions[0]?.textContent;
+        const basic = document.createElement("optgroup");
+        basic.label = "基础模型";
+        const epochs = document.createElement("optgroup");
+        epochs.label = "全部历史模型";
+        for (const model of models) {
+            if (typeof model.id !== "string" || typeof model.label !== "string") continue;
+            (model.version ? epochs : basic).append(new Option(model.label, model.id));
+        }
+        select.replaceChildren(basic);
+        if (epochs.children.length) select.append(epochs);
+        // A refresh must not silently change either side's pending selection.
+        setPolicySelection(select, previous, previousLabel);
+    }
+}
+
+async function loadPolicyModels(force = false) {
+    if (policyCatalogLoading || sessionInitializing) return;
+    policyCatalogLoading = true;
+    refreshPolicyModelsButton.disabled = true;
+    policyCatalogStatus.dataset.state = "loading";
+    policyCatalogStatus.textContent = "正在获取模型列表…";
+    try {
+        const response = await fetch("/policy/models" + (force ? "?refresh=1" : ""), { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || "无法获取 epoch 列表。");
+        if (!Array.isArray(data.models)) throw new Error("模型列表格式有误。");
+        if (!sessionInitializing) populatePolicyModels(data.models);
+        const count = data.models.filter(model => model.version).length;
+        policyCatalogStatus.dataset.state = "";
+        policyCatalogStatus.textContent = count ? `可选 ${count} 个历史模型，已合并重复副本。` : "暂未发现历史检查点；可使用基础模型。";
+    } catch (error) {
+        policyCatalogStatus.dataset.state = "error";
+        policyCatalogStatus.textContent = error.message;
+    } finally {
+        policyCatalogLoading = false;
+        refreshPolicyModelsButton.disabled = sessionInitializing;
+    }
+}
+
+refreshPolicyModelsButton.addEventListener("click", () => loadPolicyModels(true));
+
 function showPolicyModelState(data) {
     const labels = { supervised: "监督学习模型", rl: "强化学习模型（最新）" };
     const blackModel = data.policy_model_black ?? data.policy_model;
@@ -175,8 +232,8 @@ function showPolicyModelState(data) {
     }
     // Preserve both pending choices until the user starts the new game.
     if (!sessionDialog.open) {
-        if (Object.hasOwn(labels, blackModel)) policyModelBlackSelect.value = blackModel;
-        if (Object.hasOwn(labels, whiteModel)) policyModelWhiteSelect.value = whiteModel;
+        setPolicySelection(policyModelBlackSelect, blackModel, blackLabel);
+        setPolicySelection(policyModelWhiteSelect, whiteModel, whiteLabel);
     }
 }
 
@@ -250,6 +307,7 @@ async function startGame() {
         sessionInitializing = false;
         sessionDialog.removeAttribute("aria-busy");
         dialogControls.forEach((control, index) => { control.disabled = previousDisabled[index]; });
+        refreshPolicyModelsButton.disabled = policyCatalogLoading;
     }
     if (selfPlayState) {
         startGameButton.disabled = true;

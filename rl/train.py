@@ -210,6 +210,8 @@ def main(argv=None):
         if not candidates and args.bootstrap_opponent:
             candidates = [bootstrap_opponent(source, cache_dir=args.cache_dir)]
         history = HistoricalOpponentPool(candidates, cache_dir=args.cache_dir)
+        print(f'Historical opponent pool: {len(history.candidates)} distinct versions; '
+              'one uniform random draw per game; pool fixed for this run', flush=True)
     else:
         path, source = resolve_checkpoint(args.checkpoint, cache_dir=args.cache_dir)
     print(f'Loading policy: {source}', flush=True)
@@ -231,6 +233,10 @@ def main(argv=None):
     snapshot_code(output, project)
     run = dict(run_id=run_id, source=source, source_code='code', config=vars(args),
                historical_opponents=candidates)
+    if history is not None:
+        run['opponent_sampling'] = dict(method='uniform_with_replacement',
+                                       distinct_versions=len(history.candidates),
+                                       refresh='at_run_start')
     (output / 'run.json').write_text(json.dumps(run, ensure_ascii=False, indent=2) + '\n')
     pool = [copy.deepcopy(model).eval().requires_grad_(False)] if args.opponent_mode == 'pool' else []
     opponent = None

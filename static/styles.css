@@ -226,3 +226,14 @@ button:disabled {
 #session-init-message[data-state="error"] {
     color: #a12828;
 }
+
+.policy-version-tools {
+    flex-basis: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    text-align: left;
+}
+#policy-catalog-status { font-size: 14px; color: #526b75; }
+#policy-catalog-status[data-state="error"] { color: #a12828; }

@@ -103,8 +103,15 @@ BatchNorm 在采样和反向传播时都用 eval；每盘重新计算动作概�
 
 模型每 epoch 只序列化一次到 `policy.pth`，再原子复制到 `last.pth`，不每盘保存权重。
 数据集一次提交写入 `Jycccc111/Go_value_data/runs/<run_id>/epochs/epoch-.../`；
-模型仓库一次提交更新根目录 `last.pth`、本次运行的 `last.pth`、该轮 `policy.pth` 和明确列出的源码，
+模型仓库一次提交更新根目录 `last.pth`、统一目录中的 `models/epoch-000001-<sha256>.pth` 和明确列出的源码，
 写入 `Jycccc111/Go_RL_policy`。源码在开始时冻结于 `<output>/code/`，不会上传密钥或无关文件。
+所有新模型版本都放在同一个 `models/` 文件夹；内容哈希避免不同训练的相同 epoch 相互覆盖。
+起始权重使用 `models/policy-<sha256>.pth`，最新版本保留根目录 `last.pth` 别名以兼容加载代码。
+源码、训练记录和 value 数据仍按运行保存，便于追溯与恢复；本地完整 epoch 的配对结构保持不变。
+整理已有仓库模型（含旧提交中可找到的版本）可运行 `python3 -m rl.organize_models` 预览，
+再运行 `python3 -m rl.organize_models --apply`。它按内容去重后复制到 `models/`，保留原文件和 `last.pth`，
+重复运行不会重复提交；期间有新上传时会停止，重新预览后再执行。
+网页黑白模型选择共用同一个完整历史列表，显示 Epoch 与内容编号，不按日期分组。
 `boards.zip` 包含所有尝试局的单个抽样盘面；value 数据块只包含有确定标签且未跳过的样本。
 
 `--no-upload` 只保留本地完整 epoch 输出。上传失败保留配对文件及状态，可只重传：
@@ -224,11 +231,22 @@ copy that file to `<output>/last.pth`. There are no per-game weight checkpoints.
 
 One dataset commit writes the epoch's value chunk, manifest and optional board
 archive to `Jycccc111/Go_value_data/runs/<run_id>/epochs/epoch-.../`. One model
-commit updates root `last.pth`, run `last.pth`, the epoch policy and allowlisted
+commit updates root `last.pth`, `models/epoch-000001-<sha256>.pth` and allowlisted
 source in `Jycccc111/Go_RL_policy`. Source is frozen at run start under `code/`;
 credentials and unrelated files are excluded. The board archive contains the one
 chosen board for all attempted games; the value chunk includes only known,
 non-skipped labels.
+
+All new model versions share one `models/` directory, regardless of training date.
+Content digests prevent different runs at the same epoch from overwriting each other.
+Initial weights use `models/policy-<sha256>.pth`; root `last.pth` remains the latest alias.
+Local epoch model/data pairing, run provenance and dataset paths stay as documented above.
+Preview existing models, including versions retained only in old commits, with
+`python3 -m rl.organize_models`; use `--apply` to copy them into `models/`.
+The operation deduplicates content and preserves all originals and `last.pth`.
+It is idempotent and aborts if another upload changes the repository meanwhile.
+The web selectors merge all versions into one list, labelled by epoch and content
+digest instead of dates; black and white still select independently.
 
 `--no-upload` retains complete epochs locally. For a failed upload, run
 `python3 -m rl.train --output runs/rl-001 --upload-only`. Retry validates complete

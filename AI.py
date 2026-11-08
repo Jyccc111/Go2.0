@@ -9,8 +9,8 @@ from flask import Flask, request, jsonify
 from Train_net import Policy_network, get_device
 from Game import Game 
 from huggingface_hub import hf_hub_download
-from policy_models import POLICY_MODELS, validate_policy_model
-from rl.policy import load_policy
+from policy_models import get_policy_model, validate_policy_model
+from rl.policy import load_policy, verify_checkpoint_file
 app = Flask(__name__)
 
 
@@ -47,10 +47,13 @@ class AI():
         return x
 
     def load_model(self):
-        source = POLICY_MODELS[self.policy_model]
-        model_path = hf_hub_download(
-            repo_id=source['repo_id'], filename=source['filename'], repo_type='model',
-        )
+        source = get_policy_model(self.policy_model)
+        options = dict(repo_id=source['repo_id'], filename=source['filename'], repo_type='model')
+        if source.get('revision'):
+            options['revision'] = source['revision']
+        model_path = hf_hub_download(**options)
+        if source.get('identity'):
+            verify_checkpoint_file(model_path, source['identity'])
         model, _ = load_policy(model_path, self.device)
         model.eval()
         self.model = model

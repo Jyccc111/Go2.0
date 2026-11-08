@@ -10,6 +10,7 @@ import zlib
 import numpy as np
 from rl.hub import (MODEL_REPO,FALLBACK_REPO,DATA_REPO,SOURCE_FILES,
                     resolve_checkpoint,save_game,upload_game,snapshot_code,upload_training,bootstrap_opponent)
+from rl.model_store import local_version_path
 
 
 class HubSmokeTests(unittest.TestCase):
@@ -158,9 +159,10 @@ class HubSmokeTests(unittest.TestCase):
             self.assertEqual(kwargs['repo_id'],MODEL_REPO)
             self.assertEqual(kwargs['repo_type'],'model')
             self.assertIn('last.pth',paths)
-            self.assertIn('runs/run-123/last.pth',paths)
-            self.assertIn('runs/run-123/initial.pth',paths)
-            self.assertIn('runs/run-123/policy-20.pth',paths)
+            self.assertIn(local_version_path(output/'last.pth'),paths)
+            self.assertIn(local_version_path(output/'initial.pth'),paths)
+            self.assertIn(local_version_path(output/'policy-20.pth'),paths)
+            self.assertFalse(any(path.startswith('runs/') and path.endswith('.pth') for path in paths))
             self.assertIn('runs/run-123/run.json',paths)
             self.assertNotIn('.env',paths)
             operation = next(op for op in kwargs['operations'] if op.path_in_repo == 'Game.py')
@@ -172,8 +174,16 @@ class HubSmokeTests(unittest.TestCase):
             operations=api.create_commit.call_args.kwargs['operations']
             current=next(op for op in operations if op.path_in_repo=='last.pth')
             self.assertEqual(Path(current.path_or_fileobj).read_bytes(),b'epoch one immutable model')
-            self.assertIn('runs/run-123/epochs/epoch-000001/policy.pth',
+            self.assertIn(local_version_path(epoch/'policy.pth',1),
                           {op.path_in_repo for op in operations})
+            # Existing completed runs keep their original frozen code on retry.
+            (output/'code'/'source_files.json').unlink()
+            for name in ('rl/model_store.py', 'rl/organize_models.py', 'tests/test_model_store.py'):
+                (output/'code'/name).unlink()
+            upload_training(output,project,'run-123',api=api,epoch=1)
+            paths = {op.path_in_repo for op in api.create_commit.call_args.kwargs['operations']}
+            self.assertNotIn('rl/model_store.py', paths)
+            self.assertIn('Game.py', paths)
 
 
 

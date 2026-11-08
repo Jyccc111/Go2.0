@@ -6,6 +6,7 @@ from threading import Lock
 from Game import Game, Player
 from sgfmill import sgf, sgf_properties
 from GameSession import GameSession, Type_player
+from policy_models import list_policy_models, base_policy_choices
 app = Flask(__name__)
 game_session = GameSession()
 game = game_session.game
@@ -111,6 +112,17 @@ def replay_payload(message=None):
 @app.route("/")
 def index():
     return render_template("show.html")
+
+@app.route("/policy/models", methods=["GET"])
+def policy_models_catalog():
+    try:
+        models = list_policy_models(refresh=request.args.get('refresh') == '1')
+        return jsonify(success=True, models=models)
+    except Exception:
+        app.logger.exception('Could not read policy checkpoint catalog')
+        return jsonify(success=False, models=base_policy_choices(),
+                       error='暂时无法获取 epoch 列表，请检查网络后刷新。基础模型仍可选择。'), 503
+
 
 @app.route("/state", methods=["GET"])
 def get_state():

@@ -10,6 +10,7 @@ import zlib
 import numpy as np
 from huggingface_hub import CommitOperationAdd, HfApi, hf_hub_download
 from huggingface_hub.errors import RevisionNotFoundError
+from .model_store import local_version_path
 
 MODEL_REPO = 'Jycccc111/Go_RL_policy'
 FALLBACK_REPO = 'Jycccc111/Go-Policy'
@@ -17,7 +18,8 @@ DATA_REPO = 'Jycccc111/Go_value_data'
 SOURCE_FILES = (
     'Game.py', 'Train_net.py', 'Train_value.py', 'Reinforcement_learning.py', 'README_RL.md',
     'requirements-rl.txt', 'rl/__init__.py', 'rl/game.py', 'rl/policy.py',
-    'rl/train.py', 'rl/hub.py', 'rl/opponents.py', 'tests/test_rl.py',
+    'rl/train.py', 'rl/hub.py', 'rl/model_store.py', 'rl/organize_models.py',
+    'rl/opponents.py', 'tests/test_rl.py', 'tests/test_model_store.py',
     'tests/test_rl_hub.py', 'tests/test_rl_opponents.py', 'rl/value_data.py', 'tests/test_rl_value_data.py', 'tests/test_game_numeric.py',
 )
 
@@ -205,6 +207,7 @@ def snapshot_code(output,project_root):
         destination = target/relative
         destination.parent.mkdir(parents=True,exist_ok=True)
         shutil.copy2(source,destination)
+    (target/'source_files.json').write_text(json.dumps(SOURCE_FILES), encoding='utf-8')
     return target
 
 
@@ -223,18 +226,27 @@ def upload_training(output,project_root,run_id,*,api=None,model_repo=MODEL_REPO,
     code = output/'code'
     if not code.is_dir():
         raise FileNotFoundError(f'Missing frozen source snapshot: {code}')
+    version = local_version_path(weights, epoch)
     operations = [CommitOperationAdd(path_in_repo='last.pth',path_or_fileobj=str(weights)),
-                  CommitOperationAdd(path_in_repo=f'runs/{run_id}/last.pth',path_or_fileobj=str(weights))]
+                  CommitOperationAdd(path_in_repo=version,path_or_fileobj=str(weights))]
     if epoch is not None:
-        operations.append(CommitOperationAdd(
-            path_in_repo=f'runs/{run_id}/epochs/epoch-{int(epoch):06d}/policy.pth',
-            path_or_fileobj=str(weights)))
         ready = weights.parent/'ready.json'
         if ready.is_file():
             operations.append(CommitOperationAdd(
-                path_in_repo=f'runs/{run_id}/epochs/epoch-{int(epoch):06d}/ready.json',
+                path_in_repo=version.removesuffix('.pth') + '.json',
                 path_or_fileobj=str(ready)))
-    for relative in SOURCE_FILES:
+    manifest = code/'source_files.json'
+    if manifest.is_file():
+        source_files = json.loads(manifest.read_text(encoding='utf-8'))
+        if (not isinstance(source_files, list) or not source_files
+                or any(not isinstance(name, str) or name not in SOURCE_FILES for name in source_files)
+                or len(source_files) != len(set(source_files))):
+            raise ValueError('Invalid frozen source allowlist')
+    else:
+        # Completed runs from before the flat store have an older frozen list.
+        added = {'rl/model_store.py', 'rl/organize_models.py', 'tests/test_model_store.py'}
+        source_files = [name for name in SOURCE_FILES if name not in added]
+    for relative in source_files:
         source = code/relative
         if not source.is_file():
             raise FileNotFoundError(source)
@@ -242,9 +254,13 @@ def upload_training(output,project_root,run_id,*,api=None,model_repo=MODEL_REPO,
         operations.append(CommitOperationAdd(path_in_repo=f'runs/{run_id}/source/{relative}',path_or_fileobj=str(source)))
     initial = output/'initial.pth'
     if initial.is_file():
-        operations.append(CommitOperationAdd(path_in_repo=f'runs/{run_id}/initial.pth',path_or_fileobj=str(initial)))
+        initial_version = local_version_path(initial)
+        if initial_version != version:
+            operations.append(CommitOperationAdd(path_in_repo=initial_version,path_or_fileobj=str(initial)))
     for snapshot in sorted(output.glob('policy-*.pth')):
-        operations.append(CommitOperationAdd(path_in_repo=f'runs/{run_id}/{snapshot.name}',path_or_fileobj=str(snapshot)))
+        snapshot_version = local_version_path(snapshot)
+        if snapshot_version not in {op.path_in_repo for op in operations}:
+            operations.append(CommitOperationAdd(path_in_repo=snapshot_version,path_or_fileobj=str(snapshot)))
     if (output/'run.json').is_file():
         operations.append(CommitOperationAdd(path_in_repo=f'runs/{run_id}/run.json',path_or_fileobj=str(output/'run.json')))
     return api.create_commit(repo_id=model_repo,repo_type='model',operations=operations,
