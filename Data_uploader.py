@@ -92,7 +92,7 @@ def upload_chunk():
 
         raise ValueError("数据长度不一致，停止上传。")
 
-    states = np.asarray(all_states, dtype=np.uint8)
+    states = np.asarray(all_states, dtype=np.int16)
     moves = np.asarray(all_moves, dtype=np.int16)
     results = np.asarray(all_results, dtype=np.int8)
 

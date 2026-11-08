@@ -120,10 +120,11 @@ class Game:
         self.trun = 1
         self.air = air()
         self.air.initialize()
-        self.cluster_air =  np.zeros((19, 19), dtype = np.int8)
+        # Counts may exceed 127; a 19x19 group/capture can span the whole board.
+        self.cluster_air =  np.zeros((19, 19), dtype = np.int16)
         self.has_one_air = np.zeros((19, 19), dtype = np.int8)
         self.is_checked = np.zeros((19, 19), dtype = np.int8)
-        self.num_eat = np.zeros((2,19, 19), dtype = np.int8)
+        self.num_eat = np.zeros((2,19, 19), dtype = np.int16)
         self.eaten_checked = np.zeros((19, 19), dtype = np.int8)
 
         self.islegal = np.ones((19, 19), dtype = np.int8)
@@ -135,7 +136,7 @@ class Game:
         self.air_color_checked = np.zeros((19, 19), dtype = np.int8)
         self.num_eyes = np.zeros((19, 19), dtype = np.int8)
         self.num_eyes_checked = np.zeros((19, 19), dtype = np.int8)
-        self.cluster_indexing = np.zeros((19, 19), dtype = np.int8)
+        self.cluster_indexing = np.zeros((19, 19), dtype = np.int16)
         self.relation_mat = None
         self.relation_mat_clusters = None
         self.eye_board = np.zeros((19, 19), dtype = np.int8)
@@ -163,13 +164,13 @@ class Game:
         self.count = 0
         self.islegal = np.ones((19, 19), dtype = np.int8)
         self.lasteated = np.zeros((19, 19), dtype = np.int8)
-        self.num_eat = np.zeros((2,19, 19), dtype = np.int8)
+        self.num_eat = np.zeros((2,19, 19), dtype = np.int16)
         self.eaten_checked = np.zeros((19, 19), dtype = np.int8)
         self.air_color = np.zeros((19, 19), dtype = np.int8)
         self.air_color_checked = np.zeros((19, 19), dtype = np.int8)
         self.num_eyes = np.zeros((19, 19), dtype = np.int8)
         self.num_eyes_checked = np.zeros((19, 19), dtype = np.int8)
-        self.cluster_indexing = np.zeros((19, 19), dtype = np.int8)
+        self.cluster_indexing = np.zeros((19, 19), dtype = np.int16)
         self.relation_mat = None
         self.relation_mat_clusters = None
         self.eye_board = np.zeros((19, 19), dtype = np.int8)
@@ -520,8 +521,8 @@ class Game:
             layer = 1
             anti_layer = 0
         
-        result1 = np.zeros((19, 19), dtype = np.int8)
-        result2 = np.zeros((19, 19), dtype = np.int8)
+        result1 = np.zeros((19, 19), dtype = np.int16)
+        result2 = np.zeros((19, 19), dtype = np.int16)
         result1[:,:] = self.num_eat[layer,:,:]
         result2[:,:] = self.num_eat[anti_layer,:,:]
         return result1,result2
@@ -632,7 +633,8 @@ class Game:
         for i in range(len(self.air_clusters)):
             for j in range(len(self.air_clusters[i])):
                 self.cluster_indexing[self.air_clusters[i][j][0], self.air_clusters[i][j][1]] = i
-        self.relation_mat = np.zeros((len(self.all_clusters), len(self.air_clusters)), dtype = np.int8)
+        # Keep matrix products in int32 to prevent silent int8 overflow.
+        self.relation_mat = np.zeros((len(self.all_clusters), len(self.air_clusters)), dtype = np.int32)
         for row in range(19):
             for col in range(19):
                 if self.board.get(row, col) != 0:
@@ -706,8 +708,8 @@ class Game:
         return 2
 
     def cal_alive(self):
-        self.black_alive_indexes = np.zeros(len(self.black_clusters), dtype = np.int8)
-        self.white_alive_indexes = np.zeros(len(self.white_clusters), dtype = np.int8)
+        self.black_alive_indexes = np.zeros(len(self.black_clusters), dtype = np.int32)
+        self.white_alive_indexes = np.zeros(len(self.white_clusters), dtype = np.int32)
         for i in range(len(self.black_clusters)):
             if self.black_num_eyes[i] >= 2:
                 self.black_alive_indexes[i] = 1

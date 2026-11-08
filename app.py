@@ -10,7 +10,7 @@ app = Flask(__name__)
 game_session = GameSession()
 game = game_session.game
 sgf_replay = None
-recommendation_ai = None
+recommendation_ai = {}
 value_predictor = None
 value_predictor_lock = Lock()
 session_lock = Lock()
@@ -25,21 +25,21 @@ def lock_session(view):
 
 
 def get_recommendation_ai(color):
-    """Reuse a session AI or lazily load one for human-vs-human games."""
+    """Use the requested side's chosen source, never the other side's different model."""
     global recommendation_ai
-    session_ai = (
-        game_session.AI_black if color == Player.BLACK
-        else game_session.AI_white
-    )
+    selected = game_session.policy_model_for(color)
+    session_ai = game_session.AI_black if color == Player.BLACK else game_session.AI_white
     if session_ai is not None:
         return session_ai
     other_ai = game_session.AI_white if color == Player.BLACK else game_session.AI_black
-    if other_ai is not None:
+    if other_ai is not None and getattr(other_ai, 'policy_model', None) == selected:
         return other_ai
-    if recommendation_ai is None:
+    if not isinstance(recommendation_ai, dict):
+        recommendation_ai = {}
+    if selected not in recommendation_ai:
         from AI import AI
-        recommendation_ai = AI()
-    return recommendation_ai
+        recommendation_ai[selected] = AI(policy_model=selected)
+    return recommendation_ai[selected]
 
 
 def get_value_predictor():
@@ -157,19 +157,23 @@ def score(replay=False):
 @app.route("/session/init", methods=["POST"])
 @lock_session
 def initialize_session():
-    global game
+    global game, recommendation_ai
     data = request.get_json(silent=True) or {}
     try:
         state = game_session.initialize(
             data.get("player_black", Type_player.HUMAN),
             data.get("player_white", Type_player.HUMAN),
             data.get("komi", 0),
+            policy_model=data.get("policy_model"),
+            policy_model_black=data.get("policy_model_black"),
+            policy_model_white=data.get("policy_model_white"),
         )
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"success": False, "error": f"Could not initialize players: {exc}"}), 503
     game = game_session.game
+    recommendation_ai = {}
     response = {"success": True, **state}
     if game_session.player_type(game_session.next_player) == Type_player.AI:
         ai_outcome = game_session.play_ai()

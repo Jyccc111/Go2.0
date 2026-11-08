@@ -9,6 +9,8 @@ from flask import Flask, request, jsonify
 from Train_net import Policy_network, get_device
 from Game import Game 
 from huggingface_hub import hf_hub_download
+from policy_models import POLICY_MODELS, validate_policy_model
+from rl.policy import load_policy
 app = Flask(__name__)
 
 
@@ -16,7 +18,8 @@ app = Flask(__name__)
 
 class AI():
 
-    def __init__(self):
+    def __init__(self, policy_model="supervised"):
+        self.policy_model = validate_policy_model(policy_model)
         self.game = Game()
         self.device = get_device()
         self.load_model()
@@ -44,44 +47,14 @@ class AI():
         return x
 
     def load_model(self):
-
+        source = POLICY_MODELS[self.policy_model]
         model_path = hf_hub_download(
-            repo_id="Jycccc111/Go-Policy",
-            filename="best_policy_network_128.pth"
+            repo_id=source['repo_id'], filename=source['filename'], repo_type='model',
         )
-
-        checkpoint = torch.load(
-            model_path,
-            map_location=self.device,
-            weights_only=True
-        )
-        state_dict = checkpoint.get("model_state_dict", checkpoint)
-        if state_dict and next(iter(state_dict)).startswith("network."):
-            state_dict = {key.removeprefix("network."): value for key, value in state_dict.items()}
-        # Older checkpoints did not record architecture metadata. Infer it from
-        # the first convolution and residual block keys when possible.
-        size = checkpoint.get("size")
-        if size is None and "0.weight" in state_dict:
-            size = state_dict["0.weight"].shape[0]
-        block_indices = {
-            int(key.split(".")[0]) for key in state_dict
-            if key.endswith(".conv1.weight") and key.split(".")[0].isdigit()
-        }
-        num_blocks = checkpoint.get("num_blocks")
-        if num_blocks is None:
-            num_blocks = len(block_indices)
-        model = Policy_network(size=size or 64, num_blocks=num_blocks)
-        # Train_net stores the Sequential submodule's state_dict under
-        # model_state_dict, so its keys are "0.weight", "3.conv1.weight", etc.
-        # Also accept checkpoints saved from the outer Policy_network wrapper.
-        first_key = next(iter(state_dict), "")
-        if first_key.startswith("network."):
-            model.load_state_dict(state_dict)
-        else:
-            model.network.load_state_dict(state_dict)
-        model.to(self.device)
+        model, _ = load_policy(model_path, self.device)
         model.eval()
         self.model = model
+        self.policy_source = dict(source)
 
 
     def _policy_output(self, game, color=None):

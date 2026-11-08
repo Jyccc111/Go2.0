@@ -4,6 +4,7 @@ from enum import IntEnum
 from math import isfinite
 
 from Game import Game, Player
+from policy_models import POLICY_MODELS, validate_policy_model
 
 
 class Type_player(IntEnum):
@@ -23,6 +24,8 @@ class GameSession:
         self.AI_black = None
         self.AI_white = None
         self.komi = 0.0
+        self.policy_model_black = "supervised"
+        self.policy_model_white = "supervised"
         self.next_player = Player.BLACK
         self.history = []
         self.pass_count = 0
@@ -30,7 +33,8 @@ class GameSession:
         self.result = None
     
     def initialize(self, player_black=Type_player.HUMAN,
-                   player_white=Type_player.HUMAN, komi=0):
+                   player_white=Type_player.HUMAN, komi=0, policy_model=None,
+                   policy_model_black=None, policy_model_white=None):
         try:
             black_type = Type_player(player_black)
             white_type = Type_player(player_white)
@@ -44,12 +48,25 @@ class GameSession:
         if not isfinite(komi_value):
             raise ValueError("komi must be finite")
 
-        self.game = self._game_factory()
+        shared = validate_policy_model(policy_model) if policy_model is not None else None
+        black_policy = validate_policy_model(
+            policy_model_black if policy_model_black is not None else (shared or self.policy_model_black))
+        white_policy = validate_policy_model(
+            policy_model_white if policy_model_white is not None else (shared or self.policy_model_white))
+        # Load every requested AI before replacing any current game/session state.
+        # A failed download must leave the existing board and players usable.
+        new_game = self._game_factory()
+        new_game.set_komi(komi_value)
+        black_ai = self._new_ai(black_policy) if black_type == Type_player.AI else None
+        white_ai = self._new_ai(white_policy) if white_type == Type_player.AI else None
+        self.game = new_game
         self.player_black = black_type
         self.player_white = white_type
         self.komi = komi_value
-        self.AI_black = self._new_ai() if black_type == Type_player.AI else None
-        self.AI_white = self._new_ai() if white_type == Type_player.AI else None
+        self.policy_model_black = black_policy
+        self.policy_model_white = white_policy
+        self.AI_black = black_ai
+        self.AI_white = white_ai
         self.next_player = Player.BLACK
         self.history = []
         self.pass_count = 0
@@ -57,11 +74,20 @@ class GameSession:
         self.result = None
         return self.get_state()
 
-    def _new_ai(self):
+    @property
+    def policy_model(self):
+        """Compatibility for older callers; mixed choices have no shared model."""
+        return self.policy_model_black if self.policy_model_black == self.policy_model_white else None
+
+    def policy_model_for(self, color):
+        color = self._normalize_color(color)
+        return self.policy_model_black if color == Player.BLACK else self.policy_model_white
+
+    def _new_ai(self, policy_model="supervised"):
         if self._ai_factory is not None:
             return self._ai_factory()
         from AI import AI
-        return AI()
+        return AI(policy_model=policy_model)
 
     @staticmethod
     def _normalize_color(color):
@@ -232,6 +258,12 @@ class GameSession:
             "player_black": int(self.player_black),
             "player_white": int(self.player_white),
             "komi": self.komi,
+            "policy_model": self.policy_model,
+            "policy_model_label": POLICY_MODELS[self.policy_model]["label"] if self.policy_model else "黑白分别设置",
+            "policy_model_black": self.policy_model_black,
+            "policy_model_white": self.policy_model_white,
+            "policy_model_label_black": POLICY_MODELS[self.policy_model_black]["label"],
+            "policy_model_label_white": POLICY_MODELS[self.policy_model_white]["label"],
             "game_over": self.game_over,
             "result": self.result,
             "history": list(self.history),

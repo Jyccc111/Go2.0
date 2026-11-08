@@ -13,6 +13,7 @@
                 <button id="open-sgf-dialog" type="button">棋谱 / 胜率</button>
             </div>
             <p id="game-status" aria-live="polite">黑棋行棋</p>
+            <p id="policy-model-status" aria-live="polite">黑棋模型：监督学习模型；白棋模型：监督学习模型</p>
             <canvas id="go-board" width="600" height="600" aria-label="围棋棋盘"></canvas>
             <div id="controls">
                 <button id="pass-move" type="button">Pass</button>
@@ -32,19 +33,35 @@
                 <button class="dialog-close" type="button" data-close-dialog="session-dialog" aria-label="关闭">×</button>
             </div>
             <section id="session-tools" aria-label="对局设置">
-                <label for="player-black">黑棋</label>
-                <select id="player-black">
-                    <option value="1" selected>人类</option>
-                    <option value="0">AI</option>
-                </select>
-                <label for="player-white">白棋</label>
-                <select id="player-white">
-                    <option value="1" selected>人类</option>
-                    <option value="0">AI</option>
-                </select>
+                <div class="side-player-settings" role="group" aria-label="黑棋设置">
+                    <label for="player-black">黑棋</label>
+                    <select id="player-black">
+                        <option value="1" selected>人类</option>
+                        <option value="0">AI</option>
+                    </select>
+                    <label for="policy-model-black">黑棋 AI 模型</label>
+                    <select id="policy-model-black" aria-describedby="policy-model-hint">
+                        <option value="supervised" selected>监督学习模型</option>
+                        <option value="rl">强化学习模型（最新）</option>
+                    </select>
+                </div>
+                <div class="side-player-settings" role="group" aria-label="白棋设置">
+                    <label for="player-white">白棋</label>
+                    <select id="player-white">
+                        <option value="1" selected>人类</option>
+                        <option value="0">AI</option>
+                    </select>
+                    <label for="policy-model-white">白棋 AI 模型</label>
+                    <select id="policy-model-white" aria-describedby="policy-model-hint">
+                        <option value="supervised" selected>监督学习模型</option>
+                        <option value="rl">强化学习模型（最新）</option>
+                    </select>
+                </div>
+                <small id="policy-model-hint">双方分别选择；AI 落子及该方的 AI 推荐使用对应模型。AI 可以投降，投降后立即判负。</small>
                 <label for="komi">贴目</label>
                 <input id="komi" type="number" value="6.5" step="0.5">
                 <button id="start-game" type="button">开始新对局</button>
+                <p id="session-init-message" role="status" aria-live="polite"></p>
             </section>
         </dialog>
 

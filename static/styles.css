@@ -180,3 +180,49 @@ button:disabled {
 #winrate-chart-status {
     margin-top: 8px;
 }
+
+/* Policy selection belongs to the next game; show the active policy separately. */
+#policy-model-status {
+    margin: 0;
+    color: #4d6b77;
+    font-size: 14px;
+    line-height: 1.4;
+}
+
+.side-player-settings {
+    display: grid;
+    grid-template-columns: minmax(96px, auto) minmax(0, 1fr);
+    align-items: center;
+    flex-basis: 100%;
+    width: 100%;
+    gap: 10px 12px;
+    padding: 12px;
+    border: 1px solid #c6d7de;
+    border-radius: 8px;
+    background: #f2f7f9;
+    text-align: left;
+}
+
+.side-player-settings select {
+    width: 100%;
+    min-width: 0;
+}
+
+#policy-model-hint {
+    flex-basis: 100%;
+    text-align: left;
+    color: #526b75;
+    line-height: 1.5;
+}
+
+#session-init-message {
+    flex-basis: 100%;
+    min-height: 1.4em;
+    margin: 0;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+#session-init-message[data-state="error"] {
+    color: #a12828;
+}

@@ -17,15 +17,32 @@ let scoreTerritory = null;
 let scoredBoard = null;
 const gameStatus = document.getElementById("game-status");
 const sessionDialog = document.getElementById("session-dialog");
+const policyModelBlackSelect = document.getElementById("policy-model-black");
+const policyModelWhiteSelect = document.getElementById("policy-model-white");
+const policyModelStatus = document.getElementById("policy-model-status");
+const sessionInitMessage = document.getElementById("session-init-message");
+let sessionInitializing = false;
 const sgfDialog = document.getElementById("sgf-dialog");
-document.getElementById("open-session-dialog").addEventListener("click", () => sessionDialog.showModal());
+document.getElementById("open-session-dialog").addEventListener("click", () => {
+    if (!sessionInitializing) {
+        sessionInitMessage.textContent = "";
+        sessionInitMessage.dataset.state = "";
+    }
+    sessionDialog.showModal();
+});
+sessionDialog.addEventListener("cancel", event => {
+    if (sessionInitializing) event.preventDefault();
+});
 document.getElementById("open-sgf-dialog").addEventListener("click", () => sgfDialog.showModal());
 document.querySelectorAll("[data-close-dialog]").forEach(button => {
-    button.addEventListener("click", () => document.getElementById(button.dataset.closeDialog).close());
+    button.addEventListener("click", () => {
+        const dialog = document.getElementById(button.dataset.closeDialog);
+        if (dialog !== sessionDialog || !sessionInitializing) dialog.close();
+    });
 });
 document.querySelectorAll(".app-dialog").forEach(dialog => {
     dialog.addEventListener("click", event => {
-        if (event.target === dialog) dialog.close();
+        if (event.target === dialog && (dialog !== sessionDialog || !sessionInitializing)) dialog.close();
     });
 });
 
@@ -147,7 +164,24 @@ function drawStone(x, y, color) {
     ctx.fill();
 }
 
+function showPolicyModelState(data) {
+    const labels = { supervised: "监督学习模型", rl: "强化学习模型（最新）" };
+    const blackModel = data.policy_model_black ?? data.policy_model;
+    const whiteModel = data.policy_model_white ?? data.policy_model;
+    const blackLabel = data.policy_model_label_black || labels[blackModel];
+    const whiteLabel = data.policy_model_label_white || labels[whiteModel];
+    if (blackLabel && whiteLabel) {
+        policyModelStatus.textContent = `黑棋模型：${blackLabel}；白棋模型：${whiteLabel}`;
+    }
+    // Preserve both pending choices until the user starts the new game.
+    if (!sessionDialog.open) {
+        if (Object.hasOwn(labels, blackModel)) policyModelBlackSelect.value = blackModel;
+        if (Object.hasOwn(labels, whiteModel)) policyModelWhiteSelect.value = whiteModel;
+    }
+}
+
 function showSessionState(data) {
+    showPolicyModelState(data);
     resetScore();
     if (data.game_over) {
         if (data.result === "W+R" || data.result === "B+R") {
@@ -167,36 +201,63 @@ function showSessionState(data) {
 }
 
 async function startGame() {
-    startGameButton.disabled = true;
+    if (sessionInitializing) return;
+    const settings = {
+        player_black: Number(document.getElementById("player-black").value),
+        player_white: Number(document.getElementById("player-white").value),
+        policy_model_black: policyModelBlackSelect.value,
+        policy_model_white: policyModelWhiteSelect.value,
+        komi: Number(document.getElementById("komi").value)
+    };
+    const dialogControls = [...sessionDialog.querySelectorAll("select, input, button")];
+    const previousDisabled = dialogControls.map(control => control.disabled);
+    sessionInitializing = true;
+    dialogControls.forEach(control => { control.disabled = true; });
+    sessionDialog.setAttribute("aria-busy", "true");
     clearAiRecommendations();
     gameStatus.textContent = "正在开始对局…";
+    sessionInitMessage.dataset.state = "loading";
+    sessionInitMessage.textContent = "正在准备新对局，AI 模型首次使用时可能需要下载，请稍候…";
+    let selfPlayState = null;
     try {
         const response = await fetch("/session/init", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                player_black: Number(document.getElementById("player-black").value),
-                player_white: Number(document.getElementById("player-white").value),
-                komi: Number(document.getElementById("komi").value)
-            })
+            body: JSON.stringify(settings)
         });
         const data = await response.json();
         if (!response.ok || !data.success) {
-            gameStatus.textContent = data.error || "无法开始对局。";
+            const message = data.error || "无法开始对局。";
+            gameStatus.textContent = message;
+            sessionInitMessage.dataset.state = "error";
+            sessionInitMessage.textContent = message;
             return;
         }
+        sessionInitMessage.textContent = "";
+        sessionInitMessage.dataset.state = "";
         sessionDialog.close();
         currentColor = data.next_player;
         showSessionState(data);
         drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
-        const bothAi =
-            Number(document.getElementById("player-black").value) === 0 &&
-            Number(document.getElementById("player-white").value) === 0;
-        if (bothAi && !data.ai_error) await runSelfPlay(data);
+        const bothAi = data.player_black === 0 && data.player_white === 0;
+        if (bothAi && !data.ai_error && !data.game_over) selfPlayState = data;
     } catch (error) {
-        gameStatus.textContent = "无法开始对局：" + error.message;
+        const message = "无法开始对局：" + error.message;
+        gameStatus.textContent = message;
+        sessionInitMessage.dataset.state = "error";
+        sessionInitMessage.textContent = message;
     } finally {
-        startGameButton.disabled = false;
+        sessionInitializing = false;
+        sessionDialog.removeAttribute("aria-busy");
+        dialogControls.forEach((control, index) => { control.disabled = previousDisabled[index]; });
+    }
+    if (selfPlayState) {
+        startGameButton.disabled = true;
+        try {
+            await runSelfPlay(selfPlayState);
+        } finally {
+            startGameButton.disabled = false;
+        }
     }
 }
 

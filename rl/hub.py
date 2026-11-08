@@ -18,7 +18,7 @@ SOURCE_FILES = (
     'Game.py', 'Train_net.py', 'Train_value.py', 'Reinforcement_learning.py', 'README_RL.md',
     'requirements-rl.txt', 'rl/__init__.py', 'rl/game.py', 'rl/policy.py',
     'rl/train.py', 'rl/hub.py', 'rl/opponents.py', 'tests/test_rl.py',
-    'tests/test_rl_hub.py', 'tests/test_rl_opponents.py', 'rl/value_data.py', 'tests/test_rl_value_data.py',
+    'tests/test_rl_hub.py', 'tests/test_rl_opponents.py', 'rl/value_data.py', 'tests/test_rl_value_data.py', 'tests/test_game_numeric.py',
 )
 
 
