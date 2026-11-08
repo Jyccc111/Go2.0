@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 import random
 import torch
-from .game import GoAdapter
+from .game import GoAdapter, PASS, MIN_TRAIN_MOVES
 from .policy import distribution, load_policy, save_checkpoint
 from .hub import resolve_checkpoint, save_game, upload_training, snapshot_code, bootstrap_opponent
 
@@ -25,6 +25,9 @@ def rollout(model, env, opponent=None, learner_color=1, temperature=1.0, sampler
     if opponent is not None:
         opponent.eval()
     records = []
+    pass_stats = {color: dict(positions=0, probability_sum=0.0, late_positions=0,
+                             late_probability_sum=0.0, late_max_probability=0.0)
+                  for color in (1, -1)}
     device = next(model.parameters()).device
     while not env.done:
         color = env.player
@@ -35,19 +38,65 @@ def rollout(model, env, opponent=None, learner_color=1, temperature=1.0, sampler
             sampler.consider(state, env.game.board.board, env.moves, color)
         with torch.no_grad():
             logits = actor(torch.as_tensor(state, dtype=torch.float32, device=device)[None])[0]
-            action = int(distribution(logits, mask, temperature).sample().item())
+            dist = distribution(logits, mask, temperature)
+            probability = float(dist.probs[PASS].item())
+            action = int(dist.sample().item())
+        stats = pass_stats[color]
+        stats['positions'] += 1
+        stats['probability_sum'] += probability
+        if env.moves >= MIN_TRAIN_MOVES:
+            stats['late_positions'] += 1
+            stats['late_probability_sum'] += probability
+            stats['late_max_probability'] = max(stats['late_max_probability'], probability)
         if learner:
             records.append((state, mask, action, color))
         env.step(action)
+    env.pass_policy = {}
+    for color, stats in pass_stats.items():
+        env.pass_policy[str(color)] = dict(
+            positions=stats['positions'], late_positions=stats['late_positions'],
+            mean_probability=stats['probability_sum'] / stats['positions'] if stats['positions'] else None,
+            late_mean_probability=stats['late_probability_sum'] / stats['late_positions']
+            if stats['late_positions'] else None,
+            late_max_probability=stats['late_max_probability'] if stats['late_positions'] else None)
     return records
 
 
-def reinforce_update(model, optimizer, records, rewards, temperature=1.0, batch_size=32):
+def action_returns(records, rewards, outcome=None, terminal_pass_bonus=0.0):
+    """Experimental, once-only bonus to the winner's final terminal pass.
+
+    No bonus for losing, early, nonterminal, resigned or truncated games. Earlier
+    passes by the winner keep the ordinary terminal reward. This is not a
+    policy-invariant shaping rule and is disabled by default.
+    """
+    import math
+    if not math.isfinite(terminal_pass_bonus) or not 0 <= terminal_pass_bonus <= 0.1:
+        raise ValueError('terminal_pass_bonus must be between 0 and 0.1')
+    values = [rewards.get((color, action), rewards[color]) for _, _, action, color in records]
+    if terminal_pass_bonus == 0:
+        return values
+    if outcome is None:
+        raise ValueError('terminal pass bonus requires an adjudicated outcome')
+    if (outcome.get('termination') != 'two_passes' or outcome.get('moves', 0) < MIN_TRAIN_MOVES
+            or outcome.get('skip_reason') or outcome.get('truncated')
+            or outcome.get('result_source') != 'Game.cal_result'):
+        return values
+    for index in range(len(records) - 1, -1, -1):
+        if records[index][3] == outcome.get('winner'):
+            if records[index][2] == PASS:
+                values[index] += terminal_pass_bonus
+            break
+    return values
+
+
+def reinforce_update(model, optimizer, records, rewards, temperature=1.0, batch_size=32,
+                     *, outcome=None, terminal_pass_bonus=0.0):
     if not records:
         return None  # Explicitly no optimizer.step; a real zero loss still counts.
     model.eval()
     device = next(model.parameters()).device
     optimizer.zero_grad(set_to_none=True)
+    values = action_returns(records, rewards, outcome, terminal_pass_bonus)
     total = 0.0
     # Chunked backward is exactly the full-episode mean, without a huge graph.
     for start in range(0, len(records), batch_size):
@@ -56,7 +105,7 @@ def reinforce_update(model, optimizer, records, rewards, temperature=1.0, batch_
         import numpy as np
         x = torch.as_tensor(np.stack(states), dtype=torch.float32, device=device)
         dist = distribution(model(x), np.stack(masks), temperature)
-        returns = torch.tensor([rewards.get((c, a), rewards[c]) for c, a in zip(colors, actions)], device=device)
+        returns = torch.tensor(values[start:start+len(part)], device=device)
         loss = -(dist.log_prob(torch.tensor(actions, device=device)) * returns).sum() / len(records)
         if not torch.isfinite(loss):
             raise FloatingPointError('nonfinite REINFORCE loss')
@@ -150,7 +199,10 @@ def main(argv=None):
     parser.add_argument('--epochs', type=int, default=1, help='additional completed epochs to train')
     parser.add_argument('--updates-per-epoch', type=int, default=4096, help='exact optimizer steps per epoch')
     parser.add_argument('--max-games-per-epoch', type=int, help='optional attempt cap; incomplete epochs are never published')
-    parser.add_argument('--max-moves', type=int, default=800)
+    parser.add_argument('--max-moves', type=int, default=500,
+                        help='both colors combined; unfinished games at this limit are skipped')
+    parser.add_argument('--terminal-pass-bonus', type=float, default=0.0,
+                        help='experimental 0..0.1 bonus to winner final pass after scored two-pass end; default off')
     parser.add_argument('--komi', type=float, default=7.5)
     parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--temperature', type=float, default=1.0)
@@ -186,6 +238,7 @@ def main(argv=None):
             or (args.max_games_per_epoch is not None and args.max_games_per_epoch < 1)
             or not math.isfinite(args.lr) or args.lr <= 0
             or not math.isfinite(args.temperature) or args.temperature <= 0
+            or not math.isfinite(args.terminal_pass_bonus) or not 0 <= args.terminal_pass_bonus <= 0.1
             or not math.isfinite(args.komi)):
         parser.error('invalid training configuration')
     if args.bootstrap_opponent and (args.no_upload or args.opponent_mode != 'history'):
@@ -278,8 +331,14 @@ def main(argv=None):
                     raise
                 metadata.pop('history', None)  # Export one position/result, not the full move trace.
                 loss = None if env.skip_reason else reinforce_update(
-                    model, optimizer, records, env.rewards(), args.temperature)
+                    model, optimizer, records, env.rewards(), args.temperature,
+                    outcome=metadata, terminal_pass_bonus=args.terminal_pass_bonus)
                 did_update = loss is not None  # 0.0 is a successful step too.
+                pass_bonus_awarded = 0.0
+                if did_update and args.terminal_pass_bonus:
+                    base = action_returns(records, env.rewards())
+                    adjusted = action_returns(records, env.rewards(), metadata, args.terminal_pass_bonus)
+                    pass_bonus_awarded = sum(a - b for a, b in zip(adjusted, base))
                 if did_update:
                     updates += 1
                     total_updates += 1
@@ -290,12 +349,21 @@ def main(argv=None):
                                 total_updates=total_updates, sample_move_index=position['move_index'],
                                 sample_player=position['player'], board_kind='random_pre_action',
                                 terminal_encoding_player=metadata.get('encoding_player'),
-                                encoding_player=position['player'])
+                                encoding_player=position['player'],
+                                pass_policy=getattr(env, 'pass_policy', None),
+                                terminal_pass_bonus=args.terminal_pass_bonus,
+                                terminal_pass_bonus_awarded=pass_bonus_awarded)
                 save_game(output, episode, position['board'], position['state'], metadata)
                 data.add_game(episode, position, metadata)
                 print(f'epoch={epoch} game={episode} updates={updates}/{args.updates_per_epoch} '
                       f'moves={env.moves} result={metadata["result"]} '
                       f'skipped={env.skip_reason} loss={loss}', flush=True)
+                stats = (metadata['pass_policy'] or {}).get(str(learner_color), {})
+                late_probability = stats.get('late_mean_probability')
+                late_text = f'{late_probability:.4f}' if late_probability is not None else 'n/a'
+                print(f'passes={metadata.get("pass_counts")} '
+                      f'learner_late_pass_probability={late_text} '
+                      f'terminal_pass_bonus_awarded={pass_bonus_awarded:.3f}', flush=True)
             epoch_dir = data.save(epoch, updates, complete=True)
             _archive_boards(output, epoch_dir, [game['episode'] for game in data.games])
             # Serialize trained weights once per completed epoch; last.pth is an atomic copy.
@@ -311,6 +379,12 @@ def main(argv=None):
                 pool = pool[-args.pool_size:]
             print(f'epoch={epoch} complete updates={updates} games={data.attempted_games} '
                   f'value_samples={data.sample_count}', flush=True)
+            limit_games = sum(game.get('skip_reason') == 'move_limit' for game in data.games)
+            two_pass_games = sum(game.get('termination') == 'two_passes' for game in data.games)
+            print(f'epoch={epoch} endgames two_passes={two_pass_games} '
+                  f'move_limit={limit_games}/{data.attempted_games} '
+                  f'({limit_games / data.attempted_games:.1%}) '
+                  f'mean_moves={sum(game["moves"] for game in data.games) / data.attempted_games:.1f}', flush=True)
             if not args.no_upload:
                 _upload_completed_epoch(output, project, run_id, epoch_dir)
         except BaseException:

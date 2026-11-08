@@ -11,7 +11,7 @@ from Train_net import Policy_network
 from rl.game import GoAdapter, PASS, RESIGN
 from unittest.mock import patch
 from rl.policy import distribution, load_policy, save_checkpoint, CheckpointFileError
-from rl.train import rollout, reinforce_update
+from rl.train import rollout, reinforce_update, action_returns
 
 
 class SmokeTests(unittest.TestCase):
@@ -83,6 +83,103 @@ class SmokeTests(unittest.TestCase):
                     env.rewards()
                 score.assert_not_called()
 
+    def test_default_500_cap_skips_without_scoring(self):
+        env = GoAdapter()
+        self.assertEqual(env.max_moves, 500)
+        env.moves = 499
+        env.step(0)
+        with patch('Game.Game.cal_result', side_effect=AssertionError('unfinished')):
+            self.assertTrue(env.done)
+            self.assertTrue(env.truncated)
+            self.assertEqual(env.result()['skip_reason'], 'move_limit')
+            self.assertIsNone(env.result()['value_label'])
+
+    def test_natural_end_at_500_is_not_truncation(self):
+        for last_action in (PASS, RESIGN):
+            env = GoAdapter()
+            env.moves = 498
+            env.step(PASS)
+            env.step(last_action)
+            self.assertFalse(env.truncated)
+            with patch('Game.Game.cal_result', return_value=(190, 171, True)) as score:
+                self.assertIsNone(env.skip_reason)
+                self.assertEqual(env.result()['winner'], 1)
+                score.assert_called_once()
+
+    def test_terminal_pass_bonus_is_once_and_does_not_reward_losing_pass(self):
+        records = [(None, None, a, c) for a, c in
+                   [(PASS, 1), (0, 1), (PASS, -1), (PASS, 1), (PASS, -1)]]
+        outcome = dict(termination='two_passes', moves=300, winner=1,
+                       result_source='Game.cal_result', truncated=False)
+        self.assertEqual(action_returns(records, {1:1., -1:-1.}, outcome), [1,1,-1,1,-1])
+        self.assertEqual(action_returns(records, {1:1., -1:-1.}, outcome, 0.05),
+                         [1,1,-1,1.05,-1])
+        # Same rule for White; no bonus if the winner is the frozen opponent.
+        outcome['winner'] = -1
+        self.assertEqual(action_returns(records, {1:-1., -1:1.}, outcome, 0.05),
+                         [-1,-1,1,-1,1.05])
+        only_black = [record for record in records if record[3] == 1]
+        self.assertEqual(action_returns(only_black, {1:-1., -1:1.}, outcome, 0.05), [-1,-1,-1])
+
+    def test_bonus_excludes_early_resign_truncated_and_skipped_games(self):
+        records = [(None, None, PASS, 1)]
+        outcome = dict(termination='two_passes', moves=300, winner=1,
+                       result_source='Game.cal_result')
+        for change in (dict(moves=199), dict(termination='resignation'),
+                       dict(termination='move_limit'), dict(truncated=True),
+                       dict(skip_reason='move_limit'), dict(result_source='resignation')):
+            self.assertEqual(action_returns(records, {1:1., -1:-1.},
+                                           dict(outcome, **change), 0.05), [1])
+        for bonus in (-0.01, 1., float('nan'), float('inf')):
+            with self.assertRaises(ValueError):
+                action_returns(records, {1:1., -1:-1.}, outcome, bonus)
+        # Normal moves never receive a pass bonus, nor does resignation's override change.
+        records = [(None,None,0,1), (None,None,RESIGN,-1)]
+        rewards = {1:1., -1:-1., (-1,RESIGN):1.}
+        self.assertEqual(action_returns(records,rewards,outcome,0.05), [1,1])
+
+    def test_rollout_records_pass_probabilities_without_extra_positions(self):
+        env = GoAdapter()
+        model = Policy_network(size=2, num_blocks=0).eval()
+        with torch.no_grad():
+            model.network[-1].bias[PASS] = 100
+        records = rollout(model, env)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(env.result()['pass_counts'], {'1':1, '-1':1})
+        for stats in env.pass_policy.values():
+            self.assertEqual(stats['positions'], 1)
+            self.assertGreater(stats['mean_probability'], 0.99)
+            self.assertIsNone(stats['late_mean_probability'])
+        late = GoAdapter()
+        late.moves = 200
+        rollout(model, late)
+        self.assertTrue(all(s['late_positions'] == 1 for s in late.pass_policy.values()))
+
+    def test_optional_pass_bonus_is_recorded_in_completed_epoch(self):
+        from rl.train import main
+        def end_with_passes(model, env, opponent, learner_color, temperature, sampler):
+            env.moves = 198
+            records = []
+            for _ in range(2):
+                state, mask, color = env.observe(), env.legal_mask(), env.player
+                sampler.consider(state, env.game.board.board, env.moves, color)
+                records.append((state, mask, PASS, color))
+                env.step(PASS)
+            return records
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self._tiny_checkpoint(root)
+            with patch('rl.train.rollout', side_effect=end_with_passes), \
+                 patch('Game.Game.cal_result', return_value=(190,171,True)):
+                main(['--checkpoint',str(source),'--opponent-mode','self',
+                      '--output',str(root/'run'),'--epochs','1','--updates-per-epoch','1',
+                      '--terminal-pass-bonus','0.05','--no-upload'])
+            metadata = json.loads((root/'run'/'epochs'/'epoch-000001'/'metadata.json').read_text())
+            self.assertEqual(metadata['sample_count'], 1)
+            self.assertEqual(metadata['updates'], 1)
+            self.assertAlmostEqual(metadata['games'][0]['terminal_pass_bonus_awarded'], 0.05)
+            self.assertEqual(metadata['games'][0]['value_label'], 1)
+
     def test_early_resignation_uses_resignation_result(self):
         from Game import Player
         for moves in (1, 199):
@@ -153,6 +250,8 @@ class SmokeTests(unittest.TestCase):
                   '--epochs','1','--updates-per-epoch','1','--no-upload'])
             _,checkpoint=load_policy(root/'first'/'last.pth')
             self.assertEqual((checkpoint['epoch'],checkpoint['total_updates']), (1,1))
+            self.assertEqual(checkpoint['config']['max_moves'], 500)
+            self.assertEqual(checkpoint['config']['terminal_pass_bonus'], 0.0)
             main(['--opponent-mode','self','--checkpoint',str(root/'first'/'last.pth'),'--resume',
                   '--output',str(root/'second'),'--epochs','1','--updates-per-epoch','1','--no-upload'])
             _,checkpoint=load_policy(root/'second'/'last.pth')

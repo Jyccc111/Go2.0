@@ -21,7 +21,7 @@ def encode_board(game, color):
 
 
 class GoAdapter:
-    def __init__(self, komi=7.5, max_moves=800):
+    def __init__(self, komi=7.5, max_moves=500):
         if not math.isfinite(komi) or max_moves < 2:
             raise ValueError('finite komi and max_moves >= 2 required')
         self.game = Game()  # Game.reset currently calls nonexistent Board.reset.
@@ -118,7 +118,10 @@ class GoAdapter:
                 if winner is not None else None,
                 black_score=black_score, white_score=white_score, komi=self.game.komi,
                 skip_reason=self.skip_reason, truncated=self.truncated,
-                encoding_player=self.player, history=list(self.history))
+                encoding_player=self.player, history=list(self.history),
+                max_moves=self.max_moves, consecutive_passes=self.passes,
+                pass_counts={str(color): sum(h['color'] == color and h['action'] == PASS
+                                            for h in self.history) for color in (1, -1)})
         return copy.deepcopy(self._result)
 
     def rewards(self):

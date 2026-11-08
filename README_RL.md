@@ -29,7 +29,7 @@ python3 -m rl.train --output runs/rl-001 --epochs 1 --updates-per-epoch 4096 --d
 ```
 
 `--output` 必须是新目录；设备默认 CPU，可选 `cuda` 或 `mps`。
-常用参数：`--max-moves 800 --komi 7.5 --lr 0.00001 --temperature 1 --seed 0`。
+常用参数：`--max-moves 500 --komi 7.5 --lr 0.00001 --temperature 1 --seed 0`。
 Colab 应先更新 GitHub 项目；输出可放在 Drive，`--cache-dir /content/go2-hf-cache`
 放在本地磁盘，避免从 Drive 反复读取历史模型。不要用旧版 Notebook 的 `--episodes`。
 
@@ -135,6 +135,16 @@ python3 -m rl.train --checkpoint runs/rl-001/last.pth --resume --output runs/rl-
 Hugging Face 登录用 `hf auth login` 或环境中的 `HF_TOKEN`，需读取模型及写入两个目标仓库。
 不把 token 写进代码或配置。测试验证流程，不证明棋力提升，也不替原死活算法做正确性保证。
 
+### Pass 诊断与可选实验
+
+默认累计动作上限为 500，包含双方落子、pass、投降；达到上限时自然终局优先，否则标记截断并跳过更新和 value 标签，不强制点目。缩短上限可能增加跳过局，因此完成 4096 次更新不一定更快。
+
+每局保存 `pass_counts` 和 `pass_policy`：按颜色统计所有回合的 pass 概率均值，以及已完成至少 200 步后的均值、最大值、观测次数。统计包括学习方与冻结对手；未进入该阶段时为 null。只保存汇总，不增加盘面样本或整盘概率轨迹。控制台显示学习方后期均值，完整 epoch 显示双 pass 局数、撞上限比例、平均步数。
+
+默认 `--terminal-pass-bonus 0`，完全沿用胜负奖励。可显式尝试 `--terminal-pass-bonus 0.05`（允许 0–0.1）：仅在至少 200 步、双 pass 正常结束、原 `Game.cal_result()` 判胜的情况下，给胜方最后那个 pass 一次加成。只有学习方实际记录的动作参与更新；胜方此前的 pass、负方 pass、投降、短局与截断局不获加成。`terminal_pass_bonus_awarded` 记录当局实际加成。普通赢棋动作仍 +1，输棋动作仍 −1；本选项不改变 value 胜负标签或原投降奖励。
+
+这是可选实验，不是最优策略不变的奖励变换，也不保证棋力提升；原点目判胜不代表该 pass 是最优收棋时机。建议先以 0 为基线，在相同对手和 500 步上限下比较 0.05 的独立对战胜率、有效局数与步数，而不是只看棋局是否缩短。源码和 Colab 单元中的显式 `--max-moves 800` 必须同步改为 `500`；命令行参数会覆盖默认值。
+
 ## English
 
 ### Units and commands
@@ -161,7 +171,7 @@ python3 -m rl.train --output runs/rl-001 --epochs 1 --updates-per-epoch 4096 --d
 ```
 
 Use a new output directory. CPU is default; `cuda` and `mps` are optional devices.
-Defaults: `--max-moves 800 --komi 7.5 --lr 0.00001 --temperature 1 --seed 0`.
+Defaults: `--max-moves 500 --komi 7.5 --lr 0.00001 --temperature 1 --seed 0`.
 In Colab update GitHub first, put output on Drive, and keep
 `--cache-dir /content/go2-hf-cache` on local disk.
 The older Notebook's `--episodes` command is obsolete.
@@ -268,3 +278,13 @@ a bitwise replay. Authenticate with `hf auth login` or `HF_TOKEN`, with read acc
 to models and write access to both target repos. Never save tokens in source or
 configuration. Smoke tests verify mechanics, not playing strength or the original
 life/death algorithm's correctness.
+
+### Pass diagnostics and optional experiment
+
+The default combined action limit is now 500. Natural termination on action 500 takes precedence; otherwise the game is truncated and excluded from policy updates and value labels. A shorter cap may increase skipped games, so it need not finish 4096 updates sooner. Explicit CLI arguments override this default.
+
+Per-game metadata includes color-specific pass counts and probability summaries, including means/maxima after at least 200 completed actions. Missing late observations are null. No extra board samples or full probability traces are stored. Logs report learner late pass probability, actual awarded bonus, and per-epoch mean length/two-pass/truncation statistics.
+
+`--terminal-pass-bonus 0` preserves existing rewards and is the default. An explicit experimental value such as `0.05` (allowed range 0–0.1) adds a once-only bonus to the winner's final pass, only after a scored two-pass end at 200 or more actions using the original scorer. Earlier passes, losing passes, resignation, early games and truncation receive no bonus. Only recorded learner actions update. Value labels and resignation rewards are unchanged. Metadata records the bonus actually awarded.
+
+This is not policy-invariant shaping or a guarantee of stronger play or correct end timing. Compare against zero bonus with matched opponents and the same cap, measuring independent wins and valid-game rate as well as length. Update any explicit `--max-moves 800` in notebook cells to `500`.
