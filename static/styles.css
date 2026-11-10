@@ -60,6 +60,43 @@ button:disabled {
     background: #eef5f7;
 }
 
+.language-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+}
+
+.language-control select {
+    max-width: 140px;
+    padding: 8px;
+    border: 1px solid #9bb3bc;
+    border-radius: 8px;
+    background: #fffdf8;
+    color: #263238;
+    font: inherit;
+}
+
+#policy-model-status,
+#policy-model-hint {
+    overflow-wrap: anywhere;
+}
+
+#ai-playback-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px 12px;
+    padding: 10px 12px;
+    border: 1px solid #9bb3bc;
+    border-radius: 8px;
+    background: #f2f7f9;
+}
+#ai-playback-controls label { display: inline-flex; align-items: center; gap: 6px; }
+#ai-playback-controls select { padding: 6px; font: inherit; }
+#ai-playback-controls small { flex-basis: 100%; color: #526b75; }
+
 #game-status,
 #ai-recommendations,
 #value-prediction {

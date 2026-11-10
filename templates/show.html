@@ -1,99 +1,108 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>围棋</title>
-        <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
-    </head>
-    <body>
-        <main id="game-container">
-            <div id="main-toolbar">
-                <button id="open-session-dialog" type="button">新对局</button>
-                <button id="open-sgf-dialog" type="button">棋谱 / 胜率</button>
-            </div>
-            <p id="game-status" aria-live="polite">黑棋行棋</p>
-            <p id="policy-model-status" aria-live="polite">黑棋模型：监督学习模型；白棋模型：监督学习模型</p>
-            <canvas id="go-board" width="600" height="600" aria-label="围棋棋盘"></canvas>
-            <div id="controls">
-                <button id="pass-move" type="button">Pass</button>
-                <button id="toggle-air" type="button">显示气数</button>
-                <button id="show-ai-recommendations" type="button">AI 推荐</button>
-                <button id="count-score" type="button" disabled>点目</button>
-                <button id="predict-game-result" type="button">预测胜负</button>
-            </div>
-            <div id="ai-recommendations" aria-live="polite"></div>
-            <div id="score-result" role="status"></div>
-            <div id="value-prediction" aria-live="polite"></div>
-        </main>
 
-        <dialog id="session-dialog" class="app-dialog" aria-labelledby="session-dialog-title">
-            <div class="dialog-heading">
-                <h2 id="session-dialog-title">开始新对局</h2>
-                <button class="dialog-close" type="button" data-close-dialog="session-dialog" aria-label="关闭">×</button>
-            </div>
-            <section id="session-tools" aria-label="对局设置">
-                <div class="side-player-settings" role="group" aria-label="黑棋设置">
-                    <label for="player-black">黑棋</label>
-                    <select id="player-black">
-                        <option value="1" selected>人类</option>
-                        <option value="0">AI</option>
-                    </select>
-                    <label for="policy-model-black">黑棋 AI 模型</label>
-                    <select id="policy-model-black" aria-describedby="policy-model-hint">
-                        <option value="supervised" selected>监督学习模型</option>
-                        <option value="rl">强化学习模型（最新）</option>
-                    </select>
-                </div>
-                <div class="side-player-settings" role="group" aria-label="白棋设置">
-                    <label for="player-white">白棋</label>
-                    <select id="player-white">
-                        <option value="1" selected>人类</option>
-                        <option value="0">AI</option>
-                    </select>
-                    <label for="policy-model-white">白棋 AI 模型</label>
-                    <select id="policy-model-white" aria-describedby="policy-model-hint">
-                        <option value="supervised" selected>监督学习模型</option>
-                        <option value="rl">强化学习模型（最新）</option>
-                    </select>
-                </div>
-                <div class="policy-version-tools">
-                    <button id="refresh-policy-models" type="button">刷新 epoch 列表</button>
-                    <span id="policy-catalog-status" role="status" aria-live="polite">打开设置后自动获取已保存的 epoch。</span>
-                </div>
-                <small id="policy-model-hint">双方可选不同 epoch；同名 epoch 通过训练批次区分。选择用于 AI 落子和该方推荐。AI 可以投降。</small>
-                <label for="komi">贴目</label>
-                <input id="komi" type="number" value="6.5" step="0.5">
-                <button id="start-game" type="button">开始新对局</button>
-                <p id="session-init-message" role="status" aria-live="polite"></p>
-            </section>
-        </dialog>
-
-        <dialog id="sgf-dialog" class="app-dialog sgf-dialog" aria-labelledby="sgf-dialog-title">
-            <div class="dialog-heading">
-                <h2 id="sgf-dialog-title">棋谱与胜率分析</h2>
-                <button class="dialog-close" type="button" data-close-dialog="sgf-dialog" aria-label="关闭">×</button>
-            </div>
-            <section id="sgf-tools">
-                <label for="sgf-file">选择 SGF 棋谱</label>
-                <input id="sgf-file" type="file" accept=".sgf">
-                <button id="load-sgf" type="button">载入棋谱</button>
-                <button id="step-sgf" type="button" disabled>下一手</button>
-                <button id="count-sgf-score" type="button" disabled>当前盘面点目</button>
-                <button id="play-sgf-all" type="button" disabled>播放到最后</button>
-                <label><input id="show-legal" type="checkbox">显示合法点</label>
-                <label><input id="show-num-eat" type="checkbox">显示 num_eat</label>
-                <span id="sgf-result" aria-live="polite">棋谱结果：尚未载入</span>
-                <span id="sgf-progress">尚未载入棋谱</span>
-                <pre id="sgf-diagnostic" aria-live="polite"></pre>
-            </section>
-            <section id="winrate-chart-section" hidden aria-label="胜率变化曲线">
-                <h2>黑棋胜率变化</h2>
-                <canvas id="winrate-chart" width="760" height="260" aria-label="随手数变化的黑棋胜率曲线"></canvas>
-                <div id="winrate-chart-status" aria-live="polite"></div>
-            </section>
-        </dialog>
-
-        <script src="{{ url_for('static', filename='script.js') }}"></script>
-    </body>
+<html lang="{{ language }}">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>{{ tr('围棋') }}</title>
+<link href="{{ url_for('static', filename='styles.css') }}" rel="stylesheet"/>
+</head>
+<body>
+<main id="game-container">
+<div id="main-toolbar">
+<button id="open-session-dialog" type="button">{{ tr('新对局') }}</button>
+<button id="open-sgf-dialog" type="button">{{ tr('棋谱 / 胜率') }}</button>
+<label class="language-control" for="interface-language">{{ tr('语言') }} <select aria-label="{{ tr('语言') }}" id="interface-language"><option value="zh-CN">中文</option><option value="en">English</option></select></label></div>
+<p aria-live="polite" id="game-status">{{ tr('黑棋行棋') }}</p>
+<p aria-live="polite" id="policy-model-status">{{ tr('黑棋模型：监督学习模型；白棋模型：监督学习模型') }}</p>
+<canvas aria-label="{{ tr('围棋棋盘') }}" height="600" id="go-board" width="600"></canvas>
+<div id="controls">
+<button id="pass-move" type="button">Pass</button>
+<button id="toggle-air" type="button">{{ tr('显示气数') }}</button>
+<button id="show-ai-recommendations" type="button">{{ tr('AI 推荐') }}</button>
+<button disabled="" id="count-score" type="button">{{ tr('点目') }}</button>
+<button id="predict-game-result" type="button">{{ tr('预测胜负') }}</button>
+</div>
+<div id="ai-playback-controls" aria-label="{{ tr('AI 对弈播放设置') }}">
+<label><input id="slow-ai-playback" type="checkbox"/> {{ tr('缓慢播放 AI 对弈') }}</label>
+<label for="ai-move-delay">{{ tr('每手间隔') }}</label>
+<select id="ai-move-delay" disabled>
+<option value="500">{{ tr('0.5 秒') }}</option>
+<option value="1000" selected>{{ tr('1 秒') }}</option>
+<option value="2000">{{ tr('2 秒') }}</option>
+<option value="3000">{{ tr('3 秒') }}</option>
+</select>
+<small>{{ tr('仅用于双方都是 AI 的对局，计算用时另计。') }}</small>
+</div>
+<div aria-live="polite" id="ai-recommendations"></div>
+<div id="score-result" role="status"></div>
+<div aria-live="polite" id="value-prediction"></div>
+</main>
+<dialog aria-labelledby="session-dialog-title" class="app-dialog" id="session-dialog">
+<div class="dialog-heading">
+<h2 id="session-dialog-title">{{ tr('开始新对局') }}</h2>
+<button aria-label="{{ tr('关闭') }}" class="dialog-close" data-close-dialog="session-dialog" type="button">×</button>
+</div>
+<section aria-label="{{ tr('对局设置') }}" id="session-tools">
+<div aria-label="{{ tr('黑棋设置') }}" class="side-player-settings" role="group">
+<label for="player-black">{{ tr('黑棋') }}</label>
+<select id="player-black">
+<option selected="" value="1">{{ tr('人类') }}</option>
+<option value="0">AI</option>
+</select>
+<label for="policy-model-black">{{ tr('黑棋 AI 模型') }}</label>
+<select aria-describedby="policy-model-hint" id="policy-model-black">
+<option selected="" value="supervised">{{ tr('监督学习模型') }}</option>
+<option value="rl">{{ tr('强化学习模型（最新）') }}</option>
+</select>
+</div>
+<div aria-label="{{ tr('白棋设置') }}" class="side-player-settings" role="group">
+<label for="player-white">{{ tr('白棋') }}</label>
+<select id="player-white">
+<option selected="" value="1">{{ tr('人类') }}</option>
+<option value="0">AI</option>
+</select>
+<label for="policy-model-white">{{ tr('白棋 AI 模型') }}</label>
+<select aria-describedby="policy-model-hint" id="policy-model-white">
+<option selected="" value="supervised">{{ tr('监督学习模型') }}</option>
+<option value="rl">{{ tr('强化学习模型（最新）') }}</option>
+</select>
+</div>
+<div class="policy-version-tools">
+<button id="refresh-policy-models" type="button">{{ tr('刷新模型列表') }}</button>
+<span aria-live="polite" id="policy-catalog-status" role="status">{{ tr('打开设置后自动获取已保存的模型。') }}</span>
+</div>
+<small id="policy-model-hint">{{ tr('双方可独立选择模型与 epoch，内容编号区分版本。选择用于该方落子和推荐，AI 可以投降。') }}<br/>{{ tr('最新模型读取 Go_RL_policy/last.pth；已加载的 AI 不会随上传自动更新。') }}</small>
+<label for="komi">{{ tr('贴目') }}</label>
+<input id="komi" step="0.5" type="number" value="6.5"/>
+<button id="start-game" type="button">{{ tr('开始新对局') }}</button>
+<p aria-live="polite" id="session-init-message" role="status"></p>
+</section>
+</dialog>
+<dialog aria-labelledby="sgf-dialog-title" class="app-dialog sgf-dialog" id="sgf-dialog">
+<div class="dialog-heading">
+<h2 id="sgf-dialog-title">{{ tr('棋谱与胜率分析') }}</h2>
+<button aria-label="{{ tr('关闭') }}" class="dialog-close" data-close-dialog="sgf-dialog" type="button">×</button>
+</div>
+<section id="sgf-tools">
+<label for="sgf-file">{{ tr('选择 SGF 棋谱') }}</label>
+<input accept=".sgf" id="sgf-file" type="file"/>
+<button id="load-sgf" type="button">{{ tr('载入棋谱') }}</button>
+<button disabled="" id="step-sgf" type="button">{{ tr('下一手') }}</button>
+<button disabled="" id="count-sgf-score" type="button">{{ tr('当前盘面点目') }}</button>
+<button disabled="" id="play-sgf-all" type="button">{{ tr('播放到最后') }}</button>
+<label><input id="show-legal" type="checkbox"/>{{ tr('显示合法点') }}</label>
+<label><input id="show-num-eat" type="checkbox"/>{{ tr('显示 num_eat') }}</label>
+<span aria-live="polite" id="sgf-result">{{ tr('棋谱结果：尚未载入') }}</span>
+<span id="sgf-progress">{{ tr('尚未载入棋谱') }}</span>
+<pre aria-live="polite" id="sgf-diagnostic"></pre>
+</section>
+<section aria-label="{{ tr('胜率变化曲线') }}" hidden="" id="winrate-chart-section">
+<h2>{{ tr('黑棋胜率变化') }}</h2>
+<canvas aria-label="{{ tr('随手数变化的黑棋胜率曲线') }}" height="260" id="winrate-chart" width="760"></canvas>
+<div aria-live="polite" id="winrate-chart-status"></div>
+</section>
+</dialog>
+<script>window.GO_LANGUAGE = {{ language|tojson }}; window.GO_TRANSLATIONS = {{ translations|tojson }};</script><script src="{{ url_for('static', filename='i18n.js') }}"></script><script src="{{ url_for('static', filename='ai_playback.js') }}"></script><script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
 </html>

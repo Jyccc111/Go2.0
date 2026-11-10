@@ -51,6 +51,27 @@ document.querySelectorAll(".app-dialog").forEach(dialog => {
 });
 
 let showAir = false;
+let isSelfPlaying = false;
+const slowAiPlayback = document.getElementById("slow-ai-playback");
+const aiMoveDelay = document.getElementById("ai-move-delay");
+try {
+    const saved = JSON.parse(localStorage.getItem("go-ai-playback") || "null");
+    if (saved) {
+        slowAiPlayback.checked = saved.enabled === true;
+        if ([500, 1000, 2000, 3000].includes(Number(saved.delay))) aiMoveDelay.value = String(saved.delay);
+    }
+} catch {} // Playback also works when storage is unavailable.
+function updateAiPlaybackSettings() {
+    aiMoveDelay.disabled = !slowAiPlayback.checked;
+    try {
+        localStorage.setItem("go-ai-playback", JSON.stringify({
+            enabled: slowAiPlayback.checked, delay: aiMoveDelay.value,
+        }));
+    } catch {}
+}
+slowAiPlayback.addEventListener("change", updateAiPlaybackSettings);
+aiMoveDelay.addEventListener("change", updateAiPlaybackSettings);
+updateAiPlaybackSettings();
 
 let currentBoard = null;
 let currentClusterAir = null;
@@ -96,8 +117,8 @@ toggleAirButton.addEventListener("click", function() {
     showAir = !showAir;
 
     toggleAirButton.textContent = showAir
-        ? "隐藏气数"
-        : "显示气数";
+        ? t("隐藏气数")
+        : t("显示气数");
 
     if (currentBoard !== null && currentClusterAir !== null) {
         drawBoardState(currentBoard, currentClusterAir, currentLegal, currentCaptures, currentNumEat);
@@ -171,7 +192,7 @@ function drawStone(x, y, color) {
 function setPolicySelection(select, value, label) {
     if (!value) return;
     if (![...select.options].some(option => option.value === value)) {
-        select.add(new Option(label || "当前选择的 epoch", value));
+        select.add(new Option(t(label || t("当前选择的 epoch")), value));
     }
     select.value = value;
 }
@@ -181,12 +202,12 @@ function populatePolicyModels(models) {
         const previous = select.value;
         const previousLabel = select.selectedOptions[0]?.textContent;
         const basic = document.createElement("optgroup");
-        basic.label = "基础模型";
+        basic.label = t("基础模型");
         const epochs = document.createElement("optgroup");
-        epochs.label = "全部历史模型";
+        epochs.label = t("全部历史模型");
         for (const model of models) {
             if (typeof model.id !== "string" || typeof model.label !== "string") continue;
-            (model.version ? epochs : basic).append(new Option(model.label, model.id));
+            (model.version ? epochs : basic).append(new Option(t(model.label), model.id));
         }
         select.replaceChildren(basic);
         if (epochs.children.length) select.append(epochs);
@@ -200,19 +221,19 @@ async function loadPolicyModels(force = false) {
     policyCatalogLoading = true;
     refreshPolicyModelsButton.disabled = true;
     policyCatalogStatus.dataset.state = "loading";
-    policyCatalogStatus.textContent = "正在获取模型列表…";
+    policyCatalogStatus.textContent = t("正在获取模型列表…");
     try {
         const response = await fetch("/policy/models" + (force ? "?refresh=1" : ""), { cache: "no-store" });
         const data = await response.json();
-        if (!response.ok || !data.success) throw new Error(data.error || "无法获取 epoch 列表。");
-        if (!Array.isArray(data.models)) throw new Error("模型列表格式有误。");
+        if (!response.ok || !data.success) throw new Error(localizeError(data.error) || t("无法获取 epoch 列表。"));
+        if (!Array.isArray(data.models)) throw new Error(t("模型列表格式有误。"));
         if (!sessionInitializing) populatePolicyModels(data.models);
         const count = data.models.filter(model => model.version).length;
         policyCatalogStatus.dataset.state = "";
-        policyCatalogStatus.textContent = count ? `可选 ${count} 个历史模型，已合并重复副本。` : "暂未发现历史检查点；可使用基础模型。";
+        policyCatalogStatus.textContent = count ? t("可选 {0} 个历史模型，已合并重复副本。", [count]) : t("暂未发现历史检查点；可使用基础模型。");
     } catch (error) {
         policyCatalogStatus.dataset.state = "error";
-        policyCatalogStatus.textContent = error.message;
+        policyCatalogStatus.textContent = localizeError(error.message);
     } finally {
         policyCatalogLoading = false;
         refreshPolicyModelsButton.disabled = sessionInitializing;
@@ -222,13 +243,13 @@ async function loadPolicyModels(force = false) {
 refreshPolicyModelsButton.addEventListener("click", () => loadPolicyModels(true));
 
 function showPolicyModelState(data) {
-    const labels = { supervised: "监督学习模型", rl: "强化学习模型（最新）" };
+    const labels = { supervised: t("监督学习模型"), rl: t("强化学习模型（最新）") };
     const blackModel = data.policy_model_black ?? data.policy_model;
     const whiteModel = data.policy_model_white ?? data.policy_model;
     const blackLabel = data.policy_model_label_black || labels[blackModel];
     const whiteLabel = data.policy_model_label_white || labels[whiteModel];
     if (blackLabel && whiteLabel) {
-        policyModelStatus.textContent = `黑棋模型：${blackLabel}；白棋模型：${whiteLabel}`;
+        policyModelStatus.textContent = t("黑棋模型：{0}；白棋模型：{1}", [blackLabel, whiteLabel]);
     }
     // Preserve both pending choices until the user starts the new game.
     if (!sessionDialog.open) {
@@ -242,19 +263,19 @@ function showSessionState(data) {
     resetScore();
     if (data.game_over) {
         if (data.result === "W+R" || data.result === "B+R") {
-            gameStatus.textContent = data.result === "W+R" ? "黑棋投降，白棋获胜。" : "白棋投降，黑棋获胜。";
+            gameStatus.textContent = data.result === "W+R" ? t("黑棋投降，白棋获胜。") : t("白棋投降，黑棋获胜。");
             return;
         }
         gameStatus.textContent = data.result === "two_passes"
-            ? "双方连续 Pass，对局结束。"
-            : "对局结束：" + (data.result || "完成");
+            ? t("双方连续 Pass，对局结束。")
+            : t("对局结束：") + (data.result || t("完成"));
         return;
     }
-    const colorName = data.next_player === 1 ? "黑棋" : "白棋";
+    const colorName = data.next_player === 1 ? t("黑棋") : t("白棋");
     const playerType = data.next_player === 1 ? data.player_black : data.player_white;
-    const controller = playerType === 0 ? "AI" : "人类";
-    gameStatus.textContent = "轮到" + colorName + "（" + controller + "）";
-    if (data.ai_error) gameStatus.textContent += "；AI 出错：" + data.ai_error;
+    const controller = playerType === 0 ? "AI" : t("人类");
+    gameStatus.textContent = t("轮到") + colorName + t("（") + controller + t("）");
+    if (localizeError(data.ai_error)) gameStatus.textContent += t("；AI 出错：") + localizeError(data.ai_error);
 }
 
 async function startGame() {
@@ -272,9 +293,9 @@ async function startGame() {
     dialogControls.forEach(control => { control.disabled = true; });
     sessionDialog.setAttribute("aria-busy", "true");
     clearAiRecommendations();
-    gameStatus.textContent = "正在开始对局…";
+    gameStatus.textContent = t("正在开始对局…");
     sessionInitMessage.dataset.state = "loading";
-    sessionInitMessage.textContent = "正在准备新对局，AI 模型首次使用时可能需要下载，请稍候…";
+    sessionInitMessage.textContent = t("正在准备新对局，AI 模型首次使用时可能需要下载，请稍候…");
     let selfPlayState = null;
     try {
         const response = await fetch("/session/init", {
@@ -284,7 +305,7 @@ async function startGame() {
         });
         const data = await response.json();
         if (!response.ok || !data.success) {
-            const message = data.error || "无法开始对局。";
+            const message = localizeError(data.error) || t("无法开始对局。");
             gameStatus.textContent = message;
             sessionInitMessage.dataset.state = "error";
             sessionInitMessage.textContent = message;
@@ -297,9 +318,9 @@ async function startGame() {
         showSessionState(data);
         drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
         const bothAi = data.player_black === 0 && data.player_white === 0;
-        if (bothAi && !data.ai_error && !data.game_over) selfPlayState = data;
+        if (bothAi && !localizeError(data.ai_error) && !data.game_over) selfPlayState = data;
     } catch (error) {
-        const message = "无法开始对局：" + error.message;
+        const message = t("无法开始对局：") + localizeError(error.message);
         gameStatus.textContent = message;
         sessionInitMessage.dataset.state = "error";
         sessionInitMessage.textContent = message;
@@ -320,22 +341,27 @@ async function startGame() {
 }
 
 async function runSelfPlay(initialState) {
+    isSelfPlaying = true;
+    try {
     let state = initialState;
     let moves = 0;
     const moveLimit = 1000;
 
     while (!state.game_over && moves < moveLimit) {
-        gameStatus.textContent = "AI 对局进行中…";
+        gameStatus.textContent = t("AI 对局进行中…");
         await new Promise(resolve => requestAnimationFrame(resolve));
+        // Read controls again each turn so changes apply during the game.
+        // The prior move is already drawn; wait before asking for the next one.
+        await window.GoPlayback.wait(slowAiPlayback.checked, aiMoveDelay.value);
         try {
             const response = await fetch("/ai_move", { method: "POST" });
             state = await response.json();
             if (!response.ok || !state.success) {
-                gameStatus.textContent = state.error || "AI 落子失败。";
+                gameStatus.textContent = localizeError(state.error) || t("AI 落子失败。");
                 return;
             }
         } catch (error) {
-            gameStatus.textContent = "AI 对局中断：" + error.message;
+            gameStatus.textContent = t("AI 对局中断：") + localizeError(error.message);
             return;
         }
 
@@ -347,8 +373,9 @@ async function runSelfPlay(initialState) {
     }
 
     if (!state.game_over && moves >= moveLimit) {
-        gameStatus.textContent = "已达到自我对局步数上限。";
+        gameStatus.textContent = t("已达到自我对局步数上限。");
     }
+    } finally { isSelfPlaying = false; }
 }
 
 async function playMove(row, col) {
@@ -367,7 +394,7 @@ async function playMove(row, col) {
     const data = await response.json();
 
      if (!data.success) {
-        gameStatus.textContent = data.error || "非法落子。";
+        gameStatus.textContent = localizeError(data.error) || t("非法落子。");
         return;
      }
     clearAiRecommendations();
@@ -386,7 +413,7 @@ async function passMove() {
     });
     const data = await response.json();
     if (!data.success) {
-        gameStatus.textContent = data.error || "Pass 失败。";
+        gameStatus.textContent = localizeError(data.error) || t("Pass 失败。");
         return;
     }
     clearAiRecommendations();
@@ -407,7 +434,7 @@ function resetScore(isReplay = false) {
     scoredBoard = null;
     scoreResult.textContent = "";
     scoringReplay = isReplay;
-    countScoreButton.textContent = isReplay ? "棋谱点目" : "点目";
+    countScoreButton.textContent = isReplay ? t("棋谱点目") : t("点目");
     updateScoreButtons();
 }
 
@@ -420,26 +447,26 @@ async function countScore() {
     if (countScoreButton.disabled) return;
     const requestId = ++scoreRequestId;
     updateScoreButtons(true);
-    scoreResult.textContent = "正在点目…";
+    scoreResult.textContent = t("正在点目…");
     try {
         const route = scoringReplay ? "/sgf/score" : "/score";
         const response = await fetch(route, { cache: "no-store" });
         const data = await response.json();
         if (requestId !== scoreRequestId) return;
         if (!response.ok || !data.success) {
-            throw new Error(data.error || "点目失败。");
+            throw new Error(localizeError(data.error) || t("点目失败。"));
         }
         scoreTerritory = data.territory;
         scoredBoard = data.scored_board;
         drawBoardState(currentBoard, currentClusterAir, currentLegal, currentCaptures, currentNumEat);
-        const format = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 8 });
-        const winner = data.winner === "black" ? "黑棋" : "白棋";
-        const outcome = data.winner === "draw" ? "和棋" : `${winner}胜 ${format.format(data.margin)} 目`;
-        scoreResult.textContent = `点目：黑棋 ${format.format(data.black_score)} 目，` +
-            `白棋 ${format.format(data.white_score)} 目（含贴目 ${format.format(data.komi)}），${outcome}。` +
-            "死棋保留在棋盘上，方块颜色表示点目后的归属。";
+        const format = new Intl.NumberFormat(window.GoI18n.language, { maximumFractionDigits: 8 });
+        const winner = data.winner === "black" ? t("黑棋") : t("白棋");
+        const outcome = data.winner === "draw" ? t("和棋") : t("{0}胜 {1} 目", [winner, format.format(data.margin)]);
+        scoreResult.textContent = t("点目：黑棋 {0} 目，", [format.format(data.black_score)]) +
+            t("白棋 {0} 目（含贴目 {1}），{2}。", [format.format(data.white_score), format.format(data.komi), outcome]) +
+            t("死棋保留在棋盘上，方块颜色表示点目后的归属。");
     } catch (error) {
-        if (requestId === scoreRequestId) scoreResult.textContent = error.message;
+        if (requestId === scoreRequestId) scoreResult.textContent = localizeError(error.message);
     } finally {
         if (requestId === scoreRequestId) updateScoreButtons();
     }
@@ -447,21 +474,21 @@ async function countScore() {
 
 async function predictGameResult() {
     predictGameResultButton.disabled = true;
-    valuePredictionText.textContent = "正在预测当前局面的胜负…";
+    valuePredictionText.textContent = t("正在预测当前局面的胜负…");
     try {
         const predictionRoute = sgfLoaded ? "/sgf/prediction" : "/value/prediction";
         const response = await fetch(predictionRoute);
         const data = await response.json();
         if (!response.ok || !data.success) {
-            throw new Error(data.error || "无法预测当前胜负。");
+            throw new Error(localizeError(data.error) || t("无法预测当前胜负。"));
         }
         const black = (data.black_win_probability * 100).toFixed(1);
         const white = (data.white_win_probability * 100).toFixed(1);
-        const winner = data.predicted_winner === "black" ? "黑棋" : "白棋";
+        const winner = data.predicted_winner === "black" ? t("黑棋") : t("白棋");
         valuePredictionText.textContent =
-            `模型预测 ${winner} 更有可能获胜；黑胜概率 ${black}%，白胜概率 ${white}%。`;
+            t("模型预测 {0} 更有可能获胜；黑胜概率 {1}%，白胜概率 {2}%。", [winner, black, white]);
     } catch (error) {
-        valuePredictionText.textContent = error.message;
+        valuePredictionText.textContent = localizeError(error.message);
     } finally {
         predictGameResultButton.disabled = false;
     }
@@ -469,32 +496,32 @@ async function predictGameResult() {
 
 function goPointName(row, col) {
     const columns = "ABCDEFGHJKLMNOPQRST";
-    return `${columns[col]}${19 - row}（行 ${row}，列 ${col}）`;
+    return t("{0}{1}（行 {2}，列 {3}）", [columns[col], 19 - row, row, col]);
 }
 
 async function showAiRecommendations() {
     showRecommendationsButton.disabled = true;
-    recommendationsText.textContent = "正在计算 AI 推荐位置…";
+    recommendationsText.textContent = t("正在计算 AI 推荐位置…");
     try {
         const response = await fetch("/ai/recommendations");
         const data = await response.json();
         if (!response.ok || !data.success) {
-            throw new Error(data.error || "无法获取 AI 推荐。");
+            throw new Error(localizeError(data.error) || t("无法获取 AI 推荐。"));
         }
         if (scoringReplay) resetScore();
         currentRecommendations = data.recommendations || [];
         drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
         if (currentRecommendations.length === 0) {
-            recommendationsText.textContent = "当前没有可推荐的合法落点。";
+            recommendationsText.textContent = t("当前没有可推荐的合法落点。");
         } else {
-            const side = data.color === 1 ? "黑棋" : "白棋";
-            recommendationsText.textContent = `${side} AI 推荐：` + currentRecommendations
-                .map((point, index) => `${index + 1}. ${goPointName(point.row, point.col)}（分数 ${point.score.toFixed(3)}）`)
-                .join("；");
+            const side = data.color === 1 ? t("黑棋") : t("白棋");
+            recommendationsText.textContent = t("{0} AI 推荐：", [side]) + currentRecommendations
+                .map((point, index) => t("{0}. {1}（分数 {2}）", [index + 1, goPointName(point.row, point.col), point.score.toFixed(3)]))
+                .join(t("；"));
         }
     } catch (error) {
         currentRecommendations = [];
-        recommendationsText.textContent = error.message;
+        recommendationsText.textContent = localizeError(error.message);
         if (currentBoard !== null) {
             drawBoardState(currentBoard, currentClusterAir, currentLegal, currentCaptures, currentNumEat);
         }
@@ -643,28 +670,28 @@ function showSgfState(data) {
     if (sgfWinrateCurve.length > currentSgfIndex) showCurvePrediction();
     const captures = data.move?.captured || [];
     drawBoardState(data.board, data.cluster_air, data.islegal, captures, data.num_eat);
-    sgfProgress.textContent = data.message || `已处理 ${data.index}/${data.total} 手`;
+    sgfProgress.textContent = t("已处理 {0}/{1} 手", [data.index, data.total]);
     const move = data.move;
     if (move && move.diagnostic) {
         const d = move.diagnostic;
         sgfStopped = true;
         sgfDiagnostic.textContent = [
-            `非法落子：${d.color}，SGF 节点 ${d.sgf_node}，第 ${d.move_number} 手`,
-            `SGF 坐标：${d.raw}；数组坐标：row=${d.row}, col=${d.col}`,
-            `落子前目标点棋子值：${d.board_value_before}；islegal：${d.islegal_before}`,
+            t("非法落子：{0}，SGF 节点 {1}，第 {2} 手", [d.color, d.sgf_node, d.move_number]),
+            t("SGF 坐标：{0}；数组坐标：row={1}, col={2}", [d.raw, d.row, d.col]),
+            t("落子前目标点棋子值：{0}；islegal：{1}", [d.board_value_before, d.islegal_before]),
             `count, black_eat, white_eat: ${d.count}；${d.black_eat}；${d.white_eat}`,
-            `相邻棋子（黑=1，白=-1，空=0）：${JSON.stringify(d.neighbors)}`,
-            `相邻 cluster_air：${JSON.stringify(d.neighbor_cluster_air)}`,
-            `当前合法点图显示的是 Game.islegal。失败后棋盘停留在落子前状态。`,
+            t("相邻棋子（黑=1，白=-1，空=0）：{0}", [JSON.stringify(d.neighbors)]),
+            t("相邻 cluster_air：{0}", [JSON.stringify(d.neighbor_cluster_air)]),
+            t("当前合法点图显示的是 Game.islegal。失败后棋盘停留在落子前状态。", []),
         ].join("\n");
     } else if (move) {
         const capturedText = move.captured?.length
-            ? move.captured.map(([row, col]) => `(${row}, ${col})`).join("、")
-            : "无";
+            ? move.captured.map(([row, col]) => `(${row}, ${col})`).join(t("、"))
+            : t("无");
         sgfDiagnostic.textContent = [
-            `最近一步：节点 ${move.node}，${move.color_name}，${move.pass ? "pass" : `(${move.row}, ${move.col})`}，结果：${move.success ? "成功" : "失败"}`,
-            `本手实际提子：${move.captured?.length || 0} 子；坐标（row, col）：${capturedText}`,
-            "棋盘上橙红色圆圈标出本手提掉的位置。",
+            t("最近一步：节点 {0}，{1}，{2}，结果：{3}", [move.node, move.color_name, move.pass ? "pass" : `(${move.row}, ${move.col})`, move.success ? t("成功") : t("失败")]),
+            t("本手实际提子：{0} 子；坐标（row, col）：{1}", [move.captured?.length || 0, capturedText]),
+            t("棋盘上橙红色圆圈标出本手提掉的位置。"),
         ].join("\n");
     }
     stepSgfButton.disabled = !sgfLoaded || sgfStopped || sgfDone || isPlayingSgf;
@@ -673,12 +700,12 @@ function showSgfState(data) {
 }
 
 function describeSgfResult(result) {
-    if (!result) return "棋谱结果：未记录";
+    if (!result) return t("棋谱结果：未记录");
     const normalized = String(result).toUpperCase();
-    if (normalized.startsWith("B+")) return `棋谱结果：黑棋胜（${result}）`;
-    if (normalized.startsWith("W+")) return `棋谱结果：白棋胜（${result}）`;
-    if (normalized === "0" || normalized === "DRAW") return `棋谱结果：和棋（${result}）`;
-    return `棋谱结果：${result}`;
+    if (normalized.startsWith("B+")) return t("棋谱结果：黑棋胜（{0}）", [result]);
+    if (normalized.startsWith("W+")) return t("棋谱结果：白棋胜（{0}）", [result]);
+    if (normalized === "0" || normalized === "DRAW") return t("棋谱结果：和棋（{0}）", [result]);
+    return t("棋谱结果：{0}", [result]);
 }
 
 function showCurvePrediction() {
@@ -686,15 +713,15 @@ function showCurvePrediction() {
     if (!point) return;
     const black = (point.black_win_probability * 100).toFixed(1);
     const white = (100 - Number(black)).toFixed(1);
-    const winner = point.black_win_probability >= 0.5 ? "黑棋" : "白棋";
+    const winner = point.black_win_probability >= 0.5 ? t("黑棋") : t("白棋");
     valuePredictionText.textContent =
-        `当前局面预测：${winner}更有可能获胜；黑胜 ${black}%，白胜 ${white}%。`;
+        t("当前局面预测：{0}更有可能获胜；黑胜 {1}%，白胜 {2}%。", [winner, black, white]);
 }
 
 async function loadWinrateCurve() {
     const requestId = ++sgfCurveRequestId;
     winrateChartSection.hidden = false;
-    winrateChartStatus.textContent = "正在计算整局胜率变化…";
+    winrateChartStatus.textContent = t("正在计算整局胜率变化…");
     sgfWinrateCurve = [];
     try {
         const response = await fetch("/sgf/winrate-curve", {
@@ -702,20 +729,20 @@ async function loadWinrateCurve() {
         });
         const data = await response.json();
         if (!response.ok || !data.success) {
-            throw new Error(data.error || "无法计算胜率曲线。");
+            throw new Error(localizeError(data.error) || t("无法计算胜率曲线。"));
         }
         if (requestId !== sgfCurveRequestId) return;
         sgfWinrateCurve = data.curve || [];
         drawWinrateChart();
         showCurvePrediction();
-        winrateChartStatus.textContent = "横轴为手数，纵轴为黑棋胜率；圆点表示当前回放位置。";
+        winrateChartStatus.textContent = t("横轴为手数，纵轴为黑棋胜率；圆点表示当前回放位置。");
     } catch (error) {
         if (requestId !== sgfCurveRequestId) return;
         winrateChartStatus.textContent = error.name === "TimeoutError"
-            ? "计算超过 3 分钟。请查看 Flask 终端中的模型加载或推理日志。"
+            ? t("计算超过 3 分钟。请查看 Flask 终端中的模型加载或推理日志。")
             : error.name === "AbortError"
-                ? "计算已取消。"
-                : error.message;
+                ? t("计算已取消。")
+                : localizeError(error.message);
     }
 }
 
@@ -779,7 +806,7 @@ function drawWinrateChart() {
         chartContext.textAlign = "left";
         chartContext.textBaseline = "bottom";
         chartContext.fillText(
-            `第 ${selected.move} 手：黑胜 ${(selected.black_win_probability * 100).toFixed(1)}%`,
+            t("第 {0} 手：黑胜 {1}%", [selected.move, (selected.black_win_probability * 100).toFixed(1)]),
             Math.min(pointX + 8, width - 175),
             Math.max(pointY - 8, 14),
         );
@@ -788,14 +815,14 @@ function drawWinrateChart() {
     chartContext.textAlign = "center";
     chartContext.textBaseline = "top";
     chartContext.fillStyle = "#463522";
-    chartContext.fillText("手数", padding.left + plotWidth / 2, height - padding.bottom + 13);
+    chartContext.fillText(t("手数"), padding.left + plotWidth / 2, height - padding.bottom + 13);
 }
 
 
 async function loadSgf() {
     const file = sgfFileInput.files[0];
     if (!file) {
-        sgfProgress.textContent = "请先选择一个 .sgf 文件。";
+        sgfProgress.textContent = t("请先选择一个 .sgf 文件。");
         return;
     }
     const body = new FormData();
@@ -805,7 +832,7 @@ async function loadSgf() {
     try {
         const response = await fetch("/sgf/load", { method: "POST", body });
         const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error(data.error || "载入失败");
+        if (!response.ok || !data.ok) throw new Error(localizeError(data.error) || t("载入失败"));
         sgfLoaded = true;
         sgfStopped = false;
         currentSgfIndex = 0;
@@ -818,7 +845,7 @@ async function loadSgf() {
         sgfLoaded = false;
         stepSgfButton.disabled = true;
         playSgfAllButton.disabled = true;
-        sgfProgress.textContent = `载入失败：${error.message}`;
+        sgfProgress.textContent = t("载入失败：{0}", [localizeError(error.message)]);
     } finally {
         loadSgfButton.disabled = false;
     }
@@ -830,10 +857,10 @@ async function stepSgf() {
     try {
         const response = await fetch("/sgf/step", { method: "POST" });
         const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error(data.error || "回放失败");
+        if (!response.ok || !data.ok) throw new Error(localizeError(data.error) || t("回放失败"));
         showSgfState(data);
     } catch (error) {
-        sgfProgress.textContent = `回放失败：${error.message}`;
+        sgfProgress.textContent = t("回放失败：{0}", [localizeError(error.message)]);
     } finally {
         stepSgfButton.disabled = !sgfLoaded || sgfStopped || sgfDone;
         playSgfAllButton.disabled = !sgfLoaded || sgfStopped || sgfDone;
@@ -851,13 +878,13 @@ async function playSgfAll() {
         while (sgfLoaded && !sgfStopped) {
             const response = await fetch("/sgf/step", { method: "POST" });
             const data = await response.json();
-            if (!response.ok || !data.ok) throw new Error(data.error || "回放失败");
+            if (!response.ok || !data.ok) throw new Error(localizeError(data.error) || t("回放失败"));
             showSgfState(data);
             if (data.done || sgfStopped) break;
             await new Promise(resolve => setTimeout(resolve, 70));
         }
     } catch (error) {
-        sgfProgress.textContent = `回放失败：${error.message}`;
+        sgfProgress.textContent = t("回放失败：{0}", [localizeError(error.message)]);
     } finally {
         isPlayingSgf = false;
         updateScoreButtons();
@@ -913,4 +940,84 @@ async function loadBoard() {
     drawBoardState(data.board, data.cluster_air, data.islegal, [], data.num_eat);
 }
 
-loadBoard();
+
+const languageSelect = document.getElementById("interface-language");
+languageSelect.value = window.GoI18n.language;
+languageSelect.addEventListener("change", () => {
+    window.GoI18n.changeLanguage(languageSelect.value, {
+        black: document.getElementById("player-black").value,
+        white: document.getElementById("player-white").value,
+        blackModel: policyModelBlackSelect.value,
+        whiteModel: policyModelWhiteSelect.value,
+        blackLabel: policyModelBlackSelect.selectedOptions[0]?.textContent,
+        whiteLabel: policyModelWhiteSelect.selectedOptions[0]?.textContent,
+        komi: document.getElementById("komi").value,
+        settingsOpen: sessionDialog.open, sgfOpen: sgfDialog.open,
+        sgfLoaded, sgfWinrateCurve, showAir,
+        showLegal: showLegalCheckbox.checked, showCaptures: showNumEatCheckbox.checked,
+        selfPlaying: isSelfPlaying,
+        slowAiPlayback: slowAiPlayback.checked, aiMoveDelay: aiMoveDelay.value,
+    });
+});
+
+// Prevent a language reload while an in-flight operation changes the board.
+const originalFetch = window.fetch.bind(window);
+let pendingRequests = 0;
+window.fetch = async (...args) => {
+    pendingRequests += 1;
+    languageSelect.disabled = true;
+    try { return await originalFetch(...args); }
+    finally {
+        pendingRequests -= 1;
+        languageSelect.disabled = pendingRequests > 0;
+    }
+};
+
+async function restoreLanguageView() {
+    const saved = window.GoI18n.takeResume();
+    if (saved) {
+        document.getElementById("player-black").value = saved.black;
+        document.getElementById("player-white").value = saved.white;
+        document.getElementById("komi").value = saved.komi;
+        showAir = Boolean(saved.showAir);
+        showLegalCheckbox.checked = Boolean(saved.showLegal);
+        showNumEatCheckbox.checked = Boolean(saved.showCaptures);
+        if (typeof saved.slowAiPlayback === "boolean") slowAiPlayback.checked = saved.slowAiPlayback;
+        if ([500, 1000, 2000, 3000].includes(Number(saved.aiMoveDelay))) aiMoveDelay.value = String(saved.aiMoveDelay);
+        updateAiPlaybackSettings();
+        toggleAirButton.textContent = showAir ? t("隐藏气数") : t("显示气数");
+    }
+    let restoredReplay = false;
+    if (saved?.sgfLoaded) {
+        try {
+            const response = await fetch("/sgf/state");
+            const data = await response.json();
+            if (response.ok && data.ok) {
+                sgfLoaded = true;
+                sgfStopped = Boolean(data.failed);
+                sgfWinrateCurve = saved.sgfWinrateCurve || [];
+                winrateChartSection.hidden = sgfWinrateCurve.length === 0;
+                showSgfState(data);
+                restoredReplay = true;
+            }
+        } catch (error) { console.warn(error); }
+    }
+    if (!restoredReplay) await loadBoard();
+    if (saved) {
+        setPolicySelection(policyModelBlackSelect, saved.blackModel, t(saved.blackLabel));
+        setPolicySelection(policyModelWhiteSelect, saved.whiteModel, t(saved.whiteLabel));
+        if (saved.settingsOpen) {
+            sessionDialog.showModal();
+            await loadPolicyModels();
+        } else if (saved.sgfOpen) sgfDialog.showModal();
+        if (saved.selfPlaying && !restoredReplay) {
+            const data = await (await fetch("/state")).json();
+            if (!data.game_over && data.player_black === 0 && data.player_white === 0) {
+                startGameButton.disabled = true;
+                try { await runSelfPlay(data); }
+                finally { startGameButton.disabled = false; }
+            }
+        }
+    }
+}
+restoreLanguageView().catch(error => { gameStatus.textContent = localizeError(localizeError(error.message)); });

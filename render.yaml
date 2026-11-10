@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: go2-web
+    runtime: python
+    plan: free
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: gunicorn --config gunicorn.conf.py app:app
+    healthCheckPath: /healthz
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: GO_ISOLATE_SESSIONS
+        value: "1"
+      - key: GO_MAX_SESSIONS
+        value: "4"
+      - key: GO_SESSION_TTL
+        value: "3600"
+      - key: GO_VALUE_BATCH_SIZE
+        value: "16"
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: MKL_NUM_THREADS
+        value: "1"
+      - key: OPENBLAS_NUM_THREADS
+        value: "1"
+      - key: HF_HOME
+        value: /tmp/go2-huggingface
+      - key: PYTHONUNBUFFERED
+        value: "1"

@@ -205,8 +205,12 @@ class ValuePredictor:
             logit = self.model(model_input).reshape(())
             return float(torch.sigmoid(logit).item())
 
-    def predict_black_win_probabilities(self, states, batch_size=256):
+    def predict_black_win_probabilities(self, states, batch_size=None):
         """Return Black-win probabilities for encoded 8-plane positions."""
+        if batch_size is None:
+            batch_size = int(os.environ.get('GO_VALUE_BATCH_SIZE', '256'))
+        if batch_size < 1:
+            raise ValueError('value inference batch size must be positive')
         probabilities = []
         with torch.no_grad():
             for start in range(0, len(states), batch_size):

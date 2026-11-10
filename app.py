@@ -1,20 +1,73 @@
 from copy import deepcopy
 from functools import wraps
 from math import isfinite
-from flask import Flask, jsonify, render_template, request
-from threading import Lock
+import os
+import secrets
+from flask import Flask, g, has_request_context, jsonify, render_template, request, session
+from threading import Lock, RLock
 from Game import Game, Player
 from sgfmill import sgf, sgf_properties
 from GameSession import GameSession, Type_player
 from policy_models import list_policy_models, base_policy_choices
+from web_i18n import TRANSLATIONS, normalize_language, translate
+from web_sessions import BrowserSessionRegistry, LegacyState, SessionCapacityError
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
+app.config.update(
+    ISOLATE_BROWSER_SESSIONS=os.environ.get('GO_ISOLATE_SESSIONS', '1' if os.environ.get('RENDER') else '0') == '1',
+    SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SECURE=bool(os.environ.get('RENDER')),
+    MAX_CONTENT_LENGTH=2 * 1024 * 1024,
+)
 game_session = GameSession()
 game = game_session.game
 sgf_replay = None
 recommendation_ai = {}
 value_predictor = None
 value_predictor_lock = Lock()
-session_lock = Lock()
+session_lock = RLock()
+legacy_state = LegacyState(globals())
+browser_sessions = BrowserSessionRegistry(
+    max_sessions=int(os.environ.get('GO_MAX_SESSIONS', '8')),
+    ttl=float(os.environ.get('GO_SESSION_TTL', '3600')),
+)
+
+
+def runtime_state():
+    return getattr(g, 'go_state', legacy_state) if has_request_context() else legacy_state
+
+
+@app.before_request
+def select_browser_game():
+    if (not app.config['ISOLATE_BROWSER_SESSIONS'] or request.endpoint in (None, 'static', 'healthz')):
+        return None
+    old_key = session.get('go_session_id')
+    try:
+        key, state, created = browser_sessions.acquire(old_key)
+    except SessionCapacityError as exc:
+        return jsonify(success=False, ok=False, error=str(exc)), 503
+    g.go_state, g.go_state_key = state, key
+    session['go_session_id'] = key
+    if old_key and created and request.path in ('/play', '/pass', '/ai_move'):
+        return jsonify(success=False, error='Your game session expired. Refresh the page to start a new game.'), 409
+    return None
+
+
+@app.teardown_request
+def release_browser_game(error=None):
+    key = g.pop('go_state_key', None)
+    if key:
+        browser_sessions.release(key)
+
+
+@app.errorhandler(413)
+def upload_too_large(error):
+    return jsonify(success=False, ok=False, error='SGF file is too large. Maximum upload size is 2 MB.'), 413
+
+
+@app.route('/healthz', methods=['GET'])
+def healthz():
+    return jsonify(status='ok')
 
 
 def lock_session(view):
@@ -27,20 +80,20 @@ def lock_session(view):
 
 def get_recommendation_ai(color):
     """Use the requested side's chosen source, never the other side's different model."""
-    global recommendation_ai
-    selected = game_session.policy_model_for(color)
-    session_ai = game_session.AI_black if color == Player.BLACK else game_session.AI_white
+
+    selected = runtime_state().game_session.policy_model_for(color)
+    session_ai = runtime_state().game_session.AI_black if color == Player.BLACK else runtime_state().game_session.AI_white
     if session_ai is not None:
         return session_ai
-    other_ai = game_session.AI_white if color == Player.BLACK else game_session.AI_black
+    other_ai = runtime_state().game_session.AI_white if color == Player.BLACK else runtime_state().game_session.AI_black
     if other_ai is not None and getattr(other_ai, 'policy_model', None) == selected:
         return other_ai
-    if not isinstance(recommendation_ai, dict):
-        recommendation_ai = {}
-    if selected not in recommendation_ai:
+    if not isinstance(runtime_state().recommendation_ai, dict):
+        runtime_state().recommendation_ai = {}
+    if selected not in runtime_state().recommendation_ai:
         from AI import AI
-        recommendation_ai[selected] = AI(policy_model=selected)
-    return recommendation_ai[selected]
+        runtime_state().recommendation_ai[selected] = AI(policy_model=selected)
+    return runtime_state().recommendation_ai[selected]
 
 
 def get_value_predictor():
@@ -90,28 +143,39 @@ def build_sgf_winrate_curve(moves):
 
 
 def replay_payload(message=None):
-    replay_game = sgf_replay["game"]
+    replay_game = runtime_state().sgf_replay["game"]
     return {
         "ok": True,
         "message": message,
-        "filename": sgf_replay["filename"],
-        "index": sgf_replay["index"],
-        "total": len(sgf_replay["moves"]),
-        "failed": sgf_replay["failed"],
-        "result": sgf_replay["result"],
-        "done": sgf_replay["index"] >= len(sgf_replay["moves"]),
+        "filename": runtime_state().sgf_replay["filename"],
+        "index": runtime_state().sgf_replay["index"],
+        "total": len(runtime_state().sgf_replay["moves"]),
+        "failed": runtime_state().sgf_replay["failed"],
+        "result": runtime_state().sgf_replay["result"],
+        "done": runtime_state().sgf_replay["index"] >= len(runtime_state().sgf_replay["moves"]),
         "board": replay_game.board.board.tolist(),
         "air": replay_game.air.board.tolist(),
         "cluster_air": replay_game.cluster_air.tolist(),
         "islegal": replay_game.islegal.tolist(),
         "num_eat": replay_game.num_eat.tolist(),
         "current_player": int(replay_game.current_player.value),
-        "move": sgf_replay.get("last_move"),
+        "move": runtime_state().sgf_replay.get("last_move"),
     }
 
 @app.route("/")
 def index():
-    return render_template("show.html")
+    language = normalize_language(request.args.get('lang') or request.cookies.get('go_language'))
+    return render_template("show.html", language=language, translations=TRANSLATIONS,
+                           tr=lambda message: translate(message, language))
+
+
+@app.route('/sgf/state', methods=['GET'])
+@lock_session
+def sgf_state():
+    """Read the existing replay without advancing it when changing UI language."""
+    if runtime_state().sgf_replay is None:
+        return jsonify(ok=False, error='请先载入 SGF 文件。'), 400
+    return jsonify(replay_payload())
 
 @app.route("/policy/models", methods=["GET"])
 def policy_models_catalog():
@@ -125,8 +189,9 @@ def policy_models_catalog():
 
 
 @app.route("/state", methods=["GET"])
+@lock_session
 def get_state():
-    return jsonify(game_session.get_state())
+    return jsonify(runtime_state().game_session.get_state())
 
 
 @app.route("/score", methods=["GET"])
@@ -135,17 +200,17 @@ def score(replay=False):
     try:
         with session_lock:
             if replay:
-                if sgf_replay is None:
+                if runtime_state().sgf_replay is None:
                     return jsonify(success=False, error="请先载入 SGF 文件。"), 400
-                scoring_game = deepcopy(sgf_replay["game"])
+                scoring_game = deepcopy(runtime_state().sgf_replay["game"])
                 if scoring_game.komi is None:
                     return jsonify(success=False, error="棋谱的贴目格式有误，无法点目。"), 400
-                played = sgf_replay["index"] - int(sgf_replay["failed"])
+                played = runtime_state().sgf_replay["index"] - int(runtime_state().sgf_replay["failed"])
                 if played:
-                    scoring_game.current_player = Player(-sgf_replay["moves"][played - 1]["color"])
+                    scoring_game.current_player = Player(-runtime_state().sgf_replay["moves"][played - 1]["color"])
             else:
-                scoring_game = deepcopy(game_session.game)
-                scoring_game.komi = game_session.komi
+                scoring_game = deepcopy(runtime_state().game_session.game)
+                scoring_game.komi = runtime_state().game_session.komi
         black_score, white_area, _ = scoring_game.cal_result()
         white_score = white_area + scoring_game.komi
         lead = black_score - white_score
@@ -169,10 +234,10 @@ def score(replay=False):
 @app.route("/session/init", methods=["POST"])
 @lock_session
 def initialize_session():
-    global game, recommendation_ai
+
     data = request.get_json(silent=True) or {}
     try:
-        state = game_session.initialize(
+        state = runtime_state().game_session.initialize(
             data.get("player_black", Type_player.HUMAN),
             data.get("player_white", Type_player.HUMAN),
             data.get("komi", 0),
@@ -184,12 +249,12 @@ def initialize_session():
         return jsonify({"success": False, "error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"success": False, "error": f"Could not initialize players: {exc}"}), 503
-    game = game_session.game
-    recommendation_ai = {}
+    runtime_state().game = runtime_state().game_session.game
+    runtime_state().recommendation_ai = {}
     response = {"success": True, **state}
-    if game_session.player_type(game_session.next_player) == Type_player.AI:
-        ai_outcome = game_session.play_ai()
-        response.update(game_session.get_state())
+    if runtime_state().game_session.player_type(runtime_state().game_session.next_player) == Type_player.AI:
+        ai_outcome = runtime_state().game_session.play_ai()
+        response.update(runtime_state().game_session.get_state())
         response["ai_move"] = ai_outcome.get("move")
         if not ai_outcome.get("success"):
             response["ai_error"] = ai_outcome.get("error")
@@ -199,22 +264,22 @@ def initialize_session():
 def play():
     data = request.get_json(silent=True) or {}
     try:
-        outcome = game_session.play_human(
+        outcome = runtime_state().game_session.play_human(
             data.get("row"), data.get("col"),
-            data.get("color", game_session.next_player.value),
+            data.get("color", runtime_state().game_session.next_player.value),
         )
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
 
     if not outcome["success"]:
-        return jsonify({**outcome, **game_session.get_state()}), 400
+        return jsonify({**outcome, **runtime_state().game_session.get_state()}), 400
 
     ai_outcome = None
-    if not game_session.game_over and game_session.player_type(game_session.next_player) == Type_player.AI:
-        ai_outcome = game_session.play_ai()
+    if not runtime_state().game_session.game_over and runtime_state().game_session.player_type(runtime_state().game_session.next_player) == Type_player.AI:
+        ai_outcome = runtime_state().game_session.play_ai()
     response = {
         "success": True,
-        **game_session.get_state(),
+        **runtime_state().game_session.get_state(),
         "human_move": outcome.get("move"),
     }
     if ai_outcome is not None:
@@ -229,55 +294,57 @@ def play():
 def pass_turn():
     data = request.get_json(silent=True) or {}
     try:
-        outcome = game_session.pass_human(
-            data.get("color", game_session.next_player.value)
+        outcome = runtime_state().game_session.pass_human(
+            data.get("color", runtime_state().game_session.next_player.value)
         )
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
     if not outcome["success"]:
-        return jsonify({**outcome, **game_session.get_state()}), 400
-    if (outcome["success"] and not game_session.game_over
-            and game_session.player_type(game_session.next_player) == Type_player.AI):
-        ai_outcome = game_session.play_ai()
+        return jsonify({**outcome, **runtime_state().game_session.get_state()}), 400
+    if (outcome["success"] and not runtime_state().game_session.game_over
+            and runtime_state().game_session.player_type(runtime_state().game_session.next_player) == Type_player.AI):
+        ai_outcome = runtime_state().game_session.play_ai()
         outcome["ai_move"] = ai_outcome.get("move")
         if not ai_outcome.get("success"):
             outcome["ai_error"] = ai_outcome.get("error")
-    return jsonify({**outcome, **game_session.get_state()})
+    return jsonify({**outcome, **runtime_state().game_session.get_state()})
 
 
 @app.route("/ai_move", methods=["POST"])
 @lock_session
 def ai_move():
-    outcome = game_session.play_ai()
+    outcome = runtime_state().game_session.play_ai()
     status = 200 if outcome.get("success") else 400
-    return jsonify({**outcome, **game_session.get_state()}), status
+    return jsonify({**outcome, **runtime_state().game_session.get_state()}), status
 
 
 @app.route("/ai/recommendations", methods=["GET"])
+@lock_session
 def ai_recommendations():
-    if game_session.game_over:
+    if runtime_state().game_session.game_over:
         return jsonify({"success": False, "error": "对局已结束，无法生成推荐。"}), 400
-    color = game_session.next_player
+    color = runtime_state().game_session.next_player
     try:
         ai = get_recommendation_ai(color)
-        recommendations = ai.recommend_moves(game_session.game, color.value, top_k=5)
+        recommendations = ai.recommend_moves(runtime_state().game_session.game, color.value, top_k=5)
     except Exception as exc:
         return jsonify({"success": False, "error": f"生成 AI 推荐失败：{exc}"}), 503
     return jsonify({
         "success": True,
         "color": color.value,
         "recommendations": recommendations,
-        **game_session.get_state(),
+        **runtime_state().game_session.get_state(),
     })
 
 
 @app.route("/value/prediction", methods=["GET"])
+@lock_session
 def predict_game_result():
     try:
         predictor = get_value_predictor()
         black_probability = predictor.predict_black_win_probability(
-            game_session.game,
-            game_session.next_player.value,
+            runtime_state().game_session.game,
+            runtime_state().game_session.next_player.value,
         )
     except Exception as exc:
         return jsonify({
@@ -292,18 +359,19 @@ def predict_game_result():
         "predicted_winner": predicted_winner,
         "black_win_probability": black_probability,
         "white_win_probability": white_probability,
-        "next_player": game_session.next_player.value,
+        "next_player": runtime_state().game_session.next_player.value,
     })
 
 
 @app.route("/sgf/prediction", methods=["GET"])
+@lock_session
 def predict_sgf_result():
-    if sgf_replay is None:
+    if runtime_state().sgf_replay is None:
         return jsonify({"success": False, "error": "请先载入 SGF 文件。"}), 400
 
-    replay_game = sgf_replay["game"]
-    next_index = sgf_replay["index"]
-    moves = sgf_replay["moves"]
+    replay_game = runtime_state().sgf_replay["game"]
+    next_index = runtime_state().sgf_replay["index"]
+    moves = runtime_state().sgf_replay["moves"]
     if next_index < len(moves):
         color = moves[next_index]["color"]
     elif moves:
@@ -332,15 +400,16 @@ def predict_sgf_result():
 
 
 @app.route("/sgf/winrate-curve", methods=["GET"])
+@lock_session
 def sgf_winrate_curve():
-    if sgf_replay is None:
+    if runtime_state().sgf_replay is None:
         return jsonify({"success": False, "error": "请先载入 SGF 文件。"}), 400
 
     try:
-        curve = sgf_replay.get("winrate_curve")
+        curve = runtime_state().sgf_replay.get("winrate_curve")
         if curve is None:
-            curve = build_sgf_winrate_curve(sgf_replay["moves"])
-            sgf_replay["winrate_curve"] = curve
+            curve = build_sgf_winrate_curve(runtime_state().sgf_replay["moves"])
+            runtime_state().sgf_replay["winrate_curve"] = curve
     except Exception as exc:
         return jsonify({
             "success": False,
@@ -353,7 +422,7 @@ def sgf_winrate_curve():
 @app.route("/sgf/load", methods=["POST"])
 @lock_session
 def load_sgf():
-    global sgf_replay
+
 
     uploaded = request.files.get("sgf")
     if uploaded is None or not uploaded.filename:
@@ -410,7 +479,7 @@ def load_sgf():
     except ValueError:
         replay_game.komi = None
 
-    sgf_replay = {
+    runtime_state().sgf_replay = {
         "filename": uploaded.filename,
         "result": result,
         "game": replay_game,
@@ -426,15 +495,15 @@ def load_sgf():
 @app.route("/sgf/step", methods=["POST"])
 @lock_session
 def step_sgf():
-    if sgf_replay is None:
+    if runtime_state().sgf_replay is None:
         return jsonify({"ok": False, "error": "请先载入 SGF 文件。"}), 400
-    if sgf_replay["failed"]:
+    if runtime_state().sgf_replay["failed"]:
         return jsonify(replay_payload("上一手非法，回放已暂停。"))
-    if sgf_replay["index"] >= len(sgf_replay["moves"]):
+    if runtime_state().sgf_replay["index"] >= len(runtime_state().sgf_replay["moves"]):
         return jsonify(replay_payload("棋谱已播放完。"))
 
-    move = sgf_replay["moves"][sgf_replay["index"]]
-    replay_game = sgf_replay["game"]
+    move = runtime_state().sgf_replay["moves"][runtime_state().sgf_replay["index"]]
+    replay_game = runtime_state().sgf_replay["game"]
     color = move["color"]
     color_name = "黑" if color == 1 else "白"
     replay_game.current_player = Player(color)
@@ -458,7 +527,7 @@ def step_sgf():
             reason = {
                 "kind": "illegal_move",
                 "sgf_node": move["node"],
-                "move_number": sgf_replay["index"] + 1,
+                "move_number": runtime_state().sgf_replay["index"] + 1,
                 "color": color_name,
                 "raw": move["raw"],
                 "row": row,
@@ -481,10 +550,10 @@ def step_sgf():
                     "right": int(replay_game.cluster_air[row, col + 1]) if col < 18 else None,
                 },
             }
-            sgf_replay["failed"] = True
+            runtime_state().sgf_replay["failed"] = True
 
-    sgf_replay["index"] += 1
-    sgf_replay["last_move"] = {
+    runtime_state().sgf_replay["index"] += 1
+    runtime_state().sgf_replay["last_move"] = {
         **move,
         "color_name": color_name,
         "success": bool(success),

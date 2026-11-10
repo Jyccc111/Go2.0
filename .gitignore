@@ -27,3 +27,8 @@ env/
 # Generated datasets
 data/
 datasets/
+
+# Local training outputs and deployment caches
+runs/
+.cache/
+.render/
